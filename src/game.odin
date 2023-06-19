@@ -6,19 +6,29 @@ import "core:math/linalg"
 import "core:runtime"
 import "core:fmt"
 import "core:container/small_array"
+import "core:path/filepath"
+import "core:strings"
 
 print :: fmt.println
 
 @export
 _fltused: c.int = 0
 
+sounds: map[string]rl.Sound
 @export
 init :: proc "c" () {
     rl.InitWindow(800, 600, "TANKERS")
+    rl.InitAudioDevice()
     rl.SetTargetFPS(60);
     context = runtime.default_context()
     state.enemies[0].pos = {40, 400}
     state.enemy_radius[0] = 40
+
+    sounds = make(map[string]rl.Sound)
+    files, err := filepath.glob("resources/*.wav")
+    for soundpath in files {
+        sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
+    }
 }
 
 Position :: struct {
@@ -166,8 +176,12 @@ update :: proc "c" () {
                     rl.TraceLog(.INFO, "hit %f", cast(f64) linalg.vector_length(v))
                     if linalg.vector_length(v) > 30 {
                         // heavy damage
+                        rl.PlaySound(sounds["impact_heavy.wav"])
                         stun(&hitstop, 0.2)
                     } else {
+                        rl.SetSoundVolume(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
+                        rl.SetSoundPitch(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
+                        rl.PlaySound(sounds["impact.wav"])
                         normal := linalg.normalize(state.player[1].pos - enemy.pos)
                         if linalg.dot(normal, linalg.normalize(state.player[0].pos - enemy.pos)) > 0 {
                             state.player[1].pos = enemy.pos + normal * (state.enemy_radius[i] + PLAYER_RADIUS + 0.1)
