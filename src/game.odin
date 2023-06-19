@@ -3,17 +3,25 @@ import rl "raylib"
 import c "core:c"
 import "core:math"
 import "core:math/linalg"
+import "core:math/noise"
+
 import "core:runtime"
 import "core:fmt"
 import "core:container/small_array"
 import "core:path/filepath"
 import "core:strings"
 
+// TODO scenarios:
+// tank vs tank (two pendelums)
+// tank vs small enemies, lead up to miniboss?
+// tank (on helicopter) vs boss
+
 print :: fmt.println
 
 @export
 _fltused: c.int = 0
 
+impact_tex: rl.Texture
 sounds: map[string]rl.Sound
 @export
 init :: proc "c" () {
@@ -25,6 +33,7 @@ init :: proc "c" () {
     state.enemy_radius[0] = 40
 
     sounds = make(map[string]rl.Sound)
+    impact_tex = rl.LoadTexture("resources/impact.png")
     files, err := filepath.glob("resources/*.wav")
     for soundpath in files {
         sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
@@ -58,6 +67,8 @@ hitstop := Stun {
     time_left = 0,
     cooldown = 0.4,
 }
+impacts: small_array.Small_Array(10, rl.Vector2)
+impact_timer := cast(f32) 0.0
 
 update_stunned :: proc(h: ^Stun) -> bool {
     if h.time_left > 0 {
@@ -144,6 +155,14 @@ get_vel :: proc(p: Position) -> rl.Vector2 {
     return p.pos - p.old_pos
 }
 
+camera := rl.Camera2D{
+    offset = rl.Vector2{400, 300},
+    target = rl.Vector2{400, 300},
+    zoom = 1,
+}
+
+shake_magnitude := cast(f32) 0.0
+
 @export
 update :: proc "c" () {
     using rl
@@ -174,15 +193,17 @@ update :: proc "c" () {
                 if state.enemy_radius[i] > 0 && rl.CheckCollisionCircles(enemy.pos, state.enemy_radius[i], state.player[1].pos, PLAYER_RADIUS) {
                     v := get_vel(state.player[1])
                     rl.TraceLog(.INFO, "hit %f", cast(f64) linalg.vector_length(v))
+                    normal := linalg.normalize(state.player[1].pos - enemy.pos)
                     if linalg.vector_length(v) > 30 {
                         // heavy damage
                         rl.PlaySound(sounds["impact_heavy.wav"])
                         stun(&hitstop, 0.2)
+                        shake_magnitude = 4
+                        small_array.push(&impacts, enemy.pos + normal * state.enemy_radius[i])
                     } else {
                         rl.SetSoundVolume(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
                         rl.SetSoundPitch(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
                         rl.PlaySound(sounds["impact.wav"])
-                        normal := linalg.normalize(state.player[1].pos - enemy.pos)
                         if linalg.dot(normal, linalg.normalize(state.player[0].pos - enemy.pos)) > 0 {
                             state.player[1].pos = enemy.pos + normal * (state.enemy_radius[i] + PLAYER_RADIUS + 0.1)
                             state.player[1].old_pos = state.player[1].pos - normal * linalg.vector_length(v) * 0.6
@@ -193,7 +214,27 @@ update :: proc "c" () {
         }
     }
 
+    { // camera shake
+        camera.target = rl.Vector2{400, 300} + (shake_magnitude * rl.Vector2{
+            noise.noise_2d(1, [2]f64{0, rl.GetTime() * 8}),
+            noise.noise_2d(2, [2]f64{0, rl.GetTime() * 8}),
+        })
+        shake_magnitude = math.max(shake_magnitude - 0.4, 0)
+    }
 
+    { // impacts
+        if small_array.len(impacts) == 0 {
+            impact_timer = 0
+        } else {
+            impact_timer += rl.GetFrameTime()
+            if impact_timer > 0.3 {
+                impact_timer = 0
+                small_array.pop_front(&impacts)
+            }
+        }
+    }
+
+    BeginMode2D(camera)
 
     { // draw player
         DrawLineV(state.player[0].pos, state.player[1].pos, rl.BLACK)
@@ -217,7 +258,13 @@ update :: proc "c" () {
         }
     }
 
+    for p in small_array.slice(&impacts) {
+        // TODO: add variation to hits
+        rl.DrawTextureV(impact_tex, p, WHITE)
+    }
+
     // draw beam
     rl.DrawRectangleRec(Rectangle{x=state.beam.x - 10, y=state.beam.y - 10, width=1000, height=20}, LIGHTGRAY)
+    EndMode2D()
 }
 
