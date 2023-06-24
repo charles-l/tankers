@@ -1,3 +1,5 @@
+*.blend1
+*.o
 *.wasm
 *.html
 *.js

@@ -1,12 +1,14 @@
 package main
 import rl "raylib"
 import c "core:c"
+import "core:fmt"
+import "core:os"
 import "core:math"
 import "core:math/linalg"
 import "core:math/noise"
+import "core:encoding/json"
 
 import "core:runtime"
-import "core:fmt"
 import "core:container/small_array"
 import "core:path/filepath"
 import "core:strings"
@@ -16,13 +18,27 @@ import "core:strings"
 // tank vs small enemies, lead up to miniboss?
 // tank (on helicopter) vs boss
 
-print :: fmt.println
 
 @export
 _fltused: c.int = 0
 
 impact_tex: rl.Texture
+tank_tex: rl.Texture
 sounds: map[string]rl.Sound
+animation: [][]rl.Vector2
+frame_i := 0
+
+load_vec_array :: proc(arr: json.Array) -> []rl.Vector2 {
+    r := make([]rl.Vector2, len(arr))
+    for vec, i in arr {
+        x := vec.(json.Array)[0].(json.Float)
+        y := vec.(json.Array)[1].(json.Float)
+        //z := vec.(json.Array)[2].(json.Float) // unused
+        r[i] = rl.Vector2{40 + cast(f32) x * 100, 400 + cast(f32) y * -100}
+    }
+    return r
+}
+
 @export
 init :: proc "c" () {
     rl.InitWindow(800, 600, "TANKERS")
@@ -34,9 +50,32 @@ init :: proc "c" () {
 
     sounds = make(map[string]rl.Sound)
     impact_tex = rl.LoadTexture("resources/impact.png")
+    tank_tex = rl.LoadTexture("resources/tank.png")
     files, err := filepath.glob("resources/*.wav")
     for soundpath in files {
         sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
+    }
+
+    data, ok := os.read_entire_file("resources/anim/Action1.json")
+    assert(ok)
+    defer delete(data)
+
+    action1, ok1 := json.parse(data)
+    assert(ok1 == nil)
+
+    root := action1.(json.Object)
+    animation = make([][]rl.Vector2, len(root) - 1)
+    bone_i := 0
+    for k in root {
+        if k[0] == '_' {
+            continue
+        }
+        a := load_vec_array(root[k].(json.Array))
+        state.enemies[bone_i].pos = a[0]
+        state.enemy_radius[bone_i] = 40
+        rl.TraceLog(.INFO, "added %s %d %f %f", strings.clone_to_cstring(k, context.temp_allocator), bone_i, cast(f64) state.enemies[bone_i].pos.x, cast(f64) state.enemies[bone_i].pos.y)
+        animation[bone_i] = a
+        bone_i += 1
     }
 }
 
@@ -45,7 +84,7 @@ Position :: struct {
     old_pos: rl.Vector2,
 }
 
-PLAYER_RADIUS :: 20
+PLAYER_RADIUS :: 32
 GRAVITY :: rl.Vector2{0,0.5}
 state := struct {
     player: [2]Position,
@@ -171,6 +210,14 @@ update :: proc "c" () {
     defer EndDrawing();
     ClearBackground(GRAY);
 
+    { // animation
+        for i := 0; i < len(animation); i += 1 {
+            assert(len(animation[i]) > 0)
+            state.enemies[i].pos = animation[i][frame_i]
+            frame_i = (frame_i + 1) % len(animation[0])
+        }
+    }
+
     up := linalg.normalize(state.player[0].pos - state.player[1].pos)
     { // logic/physics
         if(!update_stunned(&hitstop)) {
@@ -207,6 +254,10 @@ update :: proc "c" () {
                         if linalg.dot(normal, linalg.normalize(state.player[0].pos - enemy.pos)) > 0 {
                             state.player[1].pos = enemy.pos + normal * (state.enemy_radius[i] + PLAYER_RADIUS + 0.1)
                             state.player[1].old_pos = state.player[1].pos - normal * linalg.vector_length(v) * 0.6
+                        } else {
+                            tmp := state.player[1].old_pos
+                            state.player[1].old_pos = state.player[1].pos
+                            state.player[1].pos = tmp
                         }
                     }
                 }
@@ -242,9 +293,15 @@ update :: proc "c" () {
 
         diff := state.player[0].pos - state.player[1].pos
         angle := math.atan2(diff.y, diff.x)
-        DrawRectanglePro(Rectangle{state.player[1].pos.x, state.player[1].pos.y, 10, 40}, rl.Vector2{10, 20}, angle * (180 / math.π), GREEN)
-        turret := state.player[1].pos + up * 10
-        DrawRectanglePro(Rectangle{turret.x, turret.y, 8, 30}, rl.Vector2{10, 25}, angle * (180 / math.π), GREEN)
+        //DrawRectanglePro(Rectangle{state.player[1].pos.x, state.player[1].pos.y, 10, 40}, rl.Vector2{10, 20}, angle * (180 / math.π), GREEN)
+        //turret := state.player[1].pos + up * 10
+        //DrawRectanglePro(Rectangle{turret.x, turret.y, 8, 30}, rl.Vector2{10, 25}, angle * (180 / math.π), GREEN)
+        DrawTexturePro(tank_tex,
+        Rectangle{0, 0, cast(f32) tank_tex.width, cast(f32) tank_tex.height},
+        Rectangle{state.player[1].pos.x, state.player[1].pos.y, cast(f32) tank_tex.width, cast(f32) tank_tex.height},
+        Vector2{cast(f32) tank_tex.width / 2, cast(f32) tank_tex.height / 2},
+        angle * (180 / math.π) + 90,
+        WHITE)
         DrawCircleLines(cast(i32)state.player[1].pos.x, cast(i32)state.player[1].pos.y, PLAYER_RADIUS, PINK)
     }
 
