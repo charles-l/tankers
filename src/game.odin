@@ -120,9 +120,17 @@ Stun :: struct {
     cooldown: f32,
 }
 
+Limiter :: struct {
+    last_time: f32,
+    cooldown: f32,
+}
+
 hitstop := Stun {
-    time_left = 0,
     cooldown = 0.4,
+}
+
+hitsfx_limiter := Limiter {
+    cooldown = 0.2
 }
 
 Impact :: struct {
@@ -154,6 +162,16 @@ update_stunned :: proc(h: ^Stun) -> bool {
 stun :: proc(h: ^Stun, amt: f32) -> bool {
     if h.time_left == 0 {
         h.time_left = amt
+        return true
+    } else {
+        return false
+    }
+}
+
+trigger :: proc(h: ^Limiter) -> bool {
+    t := cast(f32) rl.GetTime()
+    if t - h.last_time > h.cooldown {
+        h.last_time = t
         return true
     } else {
         return false
@@ -323,7 +341,9 @@ update :: proc "c" () {
                     normal := linalg.normalize(state.player_pos[1] - enemy_pos)
                     if linalg.vector_length(v) > 30 {
                         // heavy damage
-                        rl.PlaySound(sounds["impact_heavy.wav"])
+                        if trigger(&hitsfx_limiter) {
+                            rl.PlaySound(sounds["impact_heavy.wav"])
+                        }
                         stun(&hitstop, 0.2)
                         shake_magnitude = 4
                         small_array.push(&impacts, Impact{
@@ -333,9 +353,13 @@ update :: proc "c" () {
                             frames = 1,
                         })
                     } else {
-                        rl.SetSoundVolume(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
-                        rl.SetSoundPitch(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
-                        rl.PlaySound(sounds["impact.wav"])
+                        if linalg.vector_length(v) > 1 {
+                            if trigger(&hitsfx_limiter) {
+                                rl.SetSoundVolume(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
+                                rl.SetSoundPitch(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
+                                rl.PlaySound(sounds["impact.wav"])
+                            }
+                        }
                         if linalg.dot(normal, linalg.normalize(state.player_pos[0] - enemy_pos)) > 0 {
                             state.player_pos[1] = enemy_pos + normal * (state.enemy_radius[i] + PLAYER_RADIUS + 0.1)
                             state.player_pos_old[1] = state.player_pos[1] - normal * linalg.vector_length(v) * 0.6
