@@ -28,6 +28,7 @@ music: rl.Music
 boss_face: [4]rl.Texture
 hand_r_tex: [2]rl.Texture
 hand_l_tex: [2]rl.Texture
+flash_tex: rl.Texture
 bg: rl.Texture
 
 DEBUG :: false
@@ -81,6 +82,7 @@ init :: proc "c" () {
         rl.LoadTexture("resources/boss-face4.png")}
     hand_r_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_r.001.png"), rl.LoadTexture("resources/hand_r.002.png")}
     hand_l_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_l.002.png"), rl.LoadTexture("resources/hand_l.001.png")}
+    flash_tex = rl.LoadTexture("resources/muzzleflash.png")
     // TODO: parallax
     // TODO: birds
     bg = rl.LoadTexture("resources/bg.png")
@@ -122,8 +124,17 @@ hitstop := Stun {
     time_left = 0,
     cooldown = 0.4,
 }
-impacts: small_array.Small_Array(10, rl.Vector2)
-impact_timer := cast(f32) 0.0
+
+Impact :: struct {
+    pos: rl.Vector2,
+    time: f32,
+    ttl: f32,
+
+    tex: ^rl.Texture,
+    frames: i32,
+}
+
+impacts: small_array.Small_Array(10, Impact)
 
 update_stunned :: proc(h: ^Stun) -> bool {
     if h.time_left > 0 {
@@ -222,7 +233,6 @@ update :: proc "c" () {
                 // give it a force from the right
                 state.player_pos_old[1] += left * 40
 
-                // TODO: add muzzle flash
                 rl.PlaySound(sounds["shot.wav"])
 
                 { // aim assist
@@ -233,6 +243,13 @@ update :: proc "c" () {
                         left = ideal
                     }
                 }
+
+                small_array.push(&impacts, Impact{
+                    pos = state.player_pos[1] + left * 30,
+                    ttl = 0.2,
+                    tex = &flash_tex,
+                    frames = 3,
+                })
 
                 bullet_pos_old := state.player_pos[1]
                 bullet_pos := bullet_pos_old + left * 30
@@ -309,7 +326,12 @@ update :: proc "c" () {
                         rl.PlaySound(sounds["impact_heavy.wav"])
                         stun(&hitstop, 0.2)
                         shake_magnitude = 4
-                        small_array.push(&impacts, enemy_pos + normal * state.enemy_radius[i])
+                        small_array.push(&impacts, Impact{
+                            pos = enemy_pos + normal * state.enemy_radius[i],
+                            ttl = 0.2,
+                            tex = &impact_tex,
+                            frames = 1,
+                        })
                     } else {
                         rl.SetSoundVolume(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
                         rl.SetSoundPitch(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
@@ -337,13 +359,13 @@ update :: proc "c" () {
     }
 
     { // impacts
-        if small_array.len(impacts) == 0 {
-            impact_timer = 0
-        } else {
-            impact_timer += rl.GetFrameTime()
-            if impact_timer > 0.3 {
-                impact_timer = 0
-                small_array.pop_front(&impacts)
+        for i := 0; i < small_array.len(impacts); {
+            impact := small_array.get_ptr(&impacts, i)
+            impact.time += rl.GetFrameTime()
+            if impact.time > impact.ttl {
+                small_array.ordered_remove(&impacts, i)
+            } else {
+                i += 1
             }
         }
     }
@@ -410,9 +432,16 @@ update :: proc "c" () {
         }
     }
 
-    for p in small_array.slice(&impacts) {
-        // TODO: add variation to hits
-        rl.DrawTextureV(impact_tex, p, WHITE)
+    for impact in small_array.slice(&impacts) {
+        frame_width := impact.tex.width / impact.frames
+        frame := cast(i32) (impact.time / (impact.ttl / cast(f32) impact.frames))
+        rl.TraceLog(.INFO, "frame: %d %f", frame, cast(f64) frame_width)
+        rl.DrawTexturePro(impact.tex^,
+        Rectangle{cast(f32) frame_width * cast(f32) frame, 0, cast(f32) frame_width, cast(f32) impact.tex.height},
+        Rectangle{impact.pos.x, impact.pos.y, cast(f32) frame_width, cast(f32) impact.tex.height},
+        Vector2{cast(f32) frame_width / 2, cast(f32) impact.tex.height / 2},
+        0,
+        WHITE)
     }
 
     // draw beam
