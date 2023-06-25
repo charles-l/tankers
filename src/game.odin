@@ -18,13 +18,13 @@ import "core:strings"
 // tank vs small enemies, lead up to miniboss?
 // tank (on helicopter) vs boss
 
-
 @export
 _fltused: c.int = 0
 
 impact_tex: rl.Texture
 tank_tex: rl.Texture
 sounds: map[string]rl.Sound
+music: rl.Music
 boss_face: [4]rl.Texture
 hand_r_tex: [2]rl.Texture
 hand_l_tex: [2]rl.Texture
@@ -72,9 +72,17 @@ init :: proc "c" () {
     state.enemy_radius[0] = 50
     state.enemy_radius[1] = 40
     state.enemy_radius[2] = 40
-    boss_face = [4]rl.Texture{rl.LoadTexture("resources/boss-face1.png"), rl.LoadTexture("resources/boss-face2.png"), rl.LoadTexture("resources/boss-face3.png"), rl.LoadTexture("resources/boss-face4.png")}
+    music = rl.LoadMusicStream("resources/tankers.mp3")
+    rl.PlayMusicStream(music)
+    boss_face = [4]rl.Texture{
+        rl.LoadTexture("resources/boss-face1.png"),
+        rl.LoadTexture("resources/boss-face2.png"),
+        rl.LoadTexture("resources/boss-face3.png"),
+        rl.LoadTexture("resources/boss-face4.png")}
     hand_r_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_r.001.png"), rl.LoadTexture("resources/hand_r.002.png")}
     hand_l_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_l.002.png"), rl.LoadTexture("resources/hand_l.001.png")}
+    // TODO: parallax
+    // TODO: birds
     bg = rl.LoadTexture("resources/bg.png")
 
     sounds = make(map[string]rl.Sound)
@@ -203,6 +211,7 @@ update :: proc "c" () {
     defer EndDrawing();
     ClearBackground(GRAY);
     rl.DrawTexture(bg, 0, 0, WHITE)
+    rl.UpdateMusicStream(music)
 
     up := linalg.normalize(state.player_pos[0] - state.player_pos[1])
     { // logic/physics
@@ -213,6 +222,7 @@ update :: proc "c" () {
                 // give it a force from the right
                 state.player_pos_old[1] += left * 40
 
+                // TODO: add muzzle flash
                 rl.PlaySound(sounds["shot.wav"])
 
                 { // aim assist
@@ -247,7 +257,11 @@ update :: proc "c" () {
                 if dist(state.player_pos[1], state.enemy_pos[0]) < 400{
                     boss_state = .Spinning
                 } else {
-                    boss_state = .Idle
+                    if rl.GetRandomValue(0, 10) < 5 {
+                        boss_state = .Idle
+                    } else {
+                        boss_state = .Chase
+                    }
                 }
 
                 boss_state_time = 2
@@ -266,7 +280,7 @@ update :: proc "c" () {
                 bullet_pos := state.bullet_pos[i]
                 for enemy_pos, j in state.enemy_pos {
                     if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[j], bullet_pos, BULLET_RADIUS) {
-                        rl.PlaySound(sounds["impact.wav"])
+                        rl.PlaySound(sounds["dirt_impact.wav"])
                         state.bullet_pos[i].y = 10000
                         boss_state = .Guard
                         boss_state_time = 2
