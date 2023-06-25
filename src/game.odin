@@ -25,56 +25,16 @@ _fltused: c.int = 0
 impact_tex: rl.Texture
 tank_tex: rl.Texture
 sounds: map[string]rl.Sound
-animations: []Animation
-
-State :: enum {
-    DEFAULT,
-    DAMAGE,
-}
-
-Animation :: struct {
-    name: string,
-
-    pos: []rl.Vector2,
-    state: []State,
-
-    tex: []rl.Texture,
-    frame: []i32,
-}
-
-load_json_array :: proc($T: typeid, arr: json.Array) -> []T {
-    r := make([]T, len(arr))
-    when T == rl.Vector2 {
-        for vec, i in arr {
-            x := vec.(json.Array)[0].(json.Float)
-            y := vec.(json.Array)[1].(json.Float)
-            //z := vec.(json.Array)[2].(json.Float) // unused
-            r[i] = rl.Vector2{40 + cast(f32) x * 100, 400 + cast(f32) y * -100}
-        }
-    } else when T == i32 {
-        for v, i in arr {
-            r[i] = cast(i32) v.(json.Float)
-        }
-    } else when T == State {
-        for val, i in arr {
-            #partial switch v in val {
-                case json.String:
-                    ok: bool
-                    if strings.compare(v, "DAMAGE") == 0 {
-                        r[i] = .DAMAGE
-                    } else {
-                        assert(false)
-                    }
-                case:
-                    r[i] = .DEFAULT
-            }
-        }
-    }
-    return r
-}
+boss_face: [2]rl.Texture
+hand_r_tex: [2]rl.Texture
+hand_l_tex: [2]rl.Texture
 
 main :: proc() {
     init()
+}
+
+dist :: proc(a, b: rl.Vector2) -> f32 {
+    return linalg.vector_length(a - b)
 }
 
 draw_tex :: proc(tex: rl.Texture, pos: rl.Vector2) {
@@ -97,8 +57,12 @@ init :: proc "c" () {
     rl.InitAudioDevice()
     rl.SetTargetFPS(60);
     context = runtime.default_context()
-    state.enemy_pos[2] = {40, 400}
+    state.enemy_radius[0] = 50
+    state.enemy_radius[1] = 40
     state.enemy_radius[2] = 40
+    boss_face = [2]rl.Texture{rl.LoadTexture("resources/boss-face1.png"), rl.LoadTexture("resources/boss-face2.png")}
+    hand_r_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_r.001.png"), rl.LoadTexture("resources/hand_r.002.png")}
+    hand_l_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_l.002.png"), rl.LoadTexture("resources/hand_l.001.png")}
 
     sounds = make(map[string]rl.Sound)
     impact_tex = rl.LoadTexture("resources/impact.png")
@@ -107,46 +71,10 @@ init :: proc "c" () {
     for soundpath in files {
         sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
     }
-
-    data, ok := os.read_entire_file("resources/anim/Action1.json")
-    assert(ok)
-    defer delete(data)
-
-    action1, ok1 := json.parse(data)
-    assert(ok1 == nil)
-
-    root := action1.(json.Object)
-    animations = make([]Animation, (len(root) - 2) + 1)
-    states := load_json_array(State, root["_events"].(json.Array))
-    i := 1
-    for k in root {
-        if k[0] == '_' {
-            continue
-        }
-        anim := Animation{}
-        anim.name = k
-        anim.pos = load_json_array(rl.Vector2, root[k].(json.Object)["pos"].(json.Array))
-        if len(root[k].(json.Object)["frame"].(json.Array)) > 0 {
-            rl.TraceLog(.INFO, "add frames for %s", k)
-            anim.frame = load_json_array(i32, root[k].(json.Object)["frame"].(json.Array))
-        }
-
-        files, err := filepath.glob(strings.concatenate([]string{"resources/", k, "*.png"}, context.temp_allocator))
-        assert(err == nil)
-        if len(files) > 0 {
-            anim.tex = make([]rl.Texture, len(files))
-            for f, i in files {
-                anim.tex[i] = rl.LoadTexture(strings.clone_to_cstring(f))
-            }
-        }
-        animations[i] = anim
-        state.enemy_pose[i].anim = i
-        state.enemy_radius[i] = 40
-        i += 1
-    }
 }
 
 PLAYER_RADIUS :: 32
+BULLET_RADIUS :: 4
 GRAVITY :: rl.Vector2{0,0.5}
 state := struct {
     player_pos: [2]rl.Vector2,
@@ -158,7 +86,6 @@ state := struct {
     beam: rl.Vector2,
 
     enemy_pos: [10]rl.Vector2,
-    enemy_pose: [10]struct{frame: int, anim: int},
     enemy_pos_old: [10]rl.Vector2,
     enemy_radius: [10]f32,
 } {
@@ -201,11 +128,11 @@ stun :: proc(h: ^Stun, amt: f32) -> bool {
     }
 }
 
-verlet_integrate :: proc(pos: []rl.Vector2, old_pos: []rl.Vector2) {
+verlet_integrate :: proc(pos: []rl.Vector2, old_pos: []rl.Vector2, damping: f32 = 1.0) {
     assert(len(pos) == len(old_pos))
     for i := 0; i < len(pos); i+=1 {
         tmp := pos[i]
-        pos[i] += (pos[i] - old_pos[i]) + GRAVITY
+        pos[i] += ((pos[i] - old_pos[i]) + GRAVITY) * damping
         old_pos[i] = tmp
     }
 }
@@ -229,6 +156,24 @@ camera := rl.Camera2D{
 
 shake_magnitude := cast(f32) 0.0
 
+BossState :: enum {
+    Idle,
+    Spinning,
+}
+
+update_hand :: proc(body, target: rl.Vector2, limb: ^rl.Vector2, bstate: BossState) {
+    verlet_solve_constraints(body, limb, 100)
+    up := linalg.normalize(body - limb^)
+    left := rl.Vector2{up.y, -up.x}
+    switch bstate {
+        case .Idle:
+            err := linalg.normalize(body - limb^) - linalg.normalize(target)
+            limb^ += -err
+        case .Spinning:
+            limb^ += left * 6
+    }
+}
+
 @export
 update :: proc "c" () {
     using rl
@@ -237,15 +182,7 @@ update :: proc "c" () {
     defer EndDrawing();
     ClearBackground(GRAY);
 
-    { // animate positions
-        for i in 0..<len(state.enemy_pose) {
-            anim := animations[state.enemy_pose[i].anim]
-            if len(anim.pos) > 0 {
-                state.enemy_pose[i].frame = (state.enemy_pose[i].frame + 1) % len(anim.pos)
-                state.enemy_pos[i] = anim.pos[state.enemy_pose[i].frame]
-            }
-        }
-    }
+    boss_state: BossState
 
     up := linalg.normalize(state.player_pos[0] - state.player_pos[1])
     { // logic/physics
@@ -256,22 +193,67 @@ update :: proc "c" () {
                 // give it a force from the right
                 state.player_pos_old[1] += left * 40
 
-                bullet_pos_old := state.player_pos[1] + left * 2
-                bullet_pos := bullet_pos_old + left * 40
+                rl.PlaySound(sounds["shot.wav"])
+
+                { // aim assist
+                    ideal := linalg.normalize(state.enemy_pos[0] + {0, -90} - state.player_pos[1])
+                    d := linalg.dot(ideal, left)
+                    if 0.8 < d && d < 1 {
+                        rl.TraceLog(.INFO, "aim assist %f", cast(f64) linalg.dot(ideal, left))
+                        left = ideal
+                    }
+                }
+
+                bullet_pos_old := state.player_pos[1]
+                bullet_pos := bullet_pos_old + left * 30
+
                 append(&state.bullet_pos, bullet_pos)
                 append(&state.bullet_pos_old, bullet_pos_old)
             }
             verlet_integrate(state.player_pos[:], state.player_pos_old[:])
             verlet_integrate(state.bullet_pos[:], state.bullet_pos_old[:])
-            verlet_integrate(state.enemy_pos[:], state.enemy_pos_old[:])
+            verlet_integrate(state.enemy_pos[:], state.enemy_pos_old[:], 0.7)
+
+            state.enemy_pos[0] = {math.sin(cast(f32) rl.GetTime() / 2) * 100 + 90, 400}
+
+            if dist(state.player_pos[1], state.enemy_pos[0]) < 400 {
+                boss_state = .Spinning
+            } else {
+                boss_state = .Idle
+            }
+
+            update_hand(state.enemy_pos[0], -rl.Vector2{-1, -1 + 0.4 * math.sin(cast(f32) rl.GetTime() + 1)}, &state.enemy_pos[1], boss_state)
+            update_hand(state.enemy_pos[0], -rl.Vector2{-1, -1.9 + 0.4 * math.sin(cast(f32) rl.GetTime())}, &state.enemy_pos[2], boss_state)
+
             for i in 0..<10 {
                 state.player_pos[0] = state.beam
                 verlet_solve_constraints(state.player_pos[0], &state.player_pos[1], PLAYER_MAX_DIST)
-                verlet_solve_constraints(state.enemy_pos[0], &state.enemy_pos[2], 100)
             }
 
+
+            for i := 0; i < len(state.bullet_pos); {
+                bullet_pos := state.bullet_pos[i]
+                for enemy_pos, j in state.enemy_pos {
+                    if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[j], bullet_pos, BULLET_RADIUS) {
+                        rl.PlaySound(sounds["impact.wav"])
+                        state.bullet_pos[i].y = 10000
+                    }
+                }
+                if bullet_pos.y > 10000 {
+                    ordered_remove(&state.bullet_pos, i)
+                    ordered_remove(&state.bullet_pos_old, i)
+                    continue
+                } else {
+                    i += 1
+                }
+            }
+
+            // collisions
             for enemy_pos, i in state.enemy_pos {
-                if state.enemy_radius[i] > 0 && rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[i], state.player_pos[1], PLAYER_RADIUS) {
+                if state.enemy_radius[i] == 0 {
+                    continue
+                }
+                if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[i], state.player_pos[1], PLAYER_RADIUS) {
                     v := state.player_pos[1] - state.player_pos_old[1]
                     rl.TraceLog(.INFO, "hit %f", cast(f64) linalg.vector_length(v))
                     normal := linalg.normalize(state.player_pos[1] - enemy_pos)
@@ -335,18 +317,38 @@ update :: proc "c" () {
     }
 
     for bullet_pos in state.bullet_pos {
-        rl.DrawCircle(cast(i32)bullet_pos.x, cast(i32)bullet_pos.y, 2, WHITE)
+        rl.DrawCircle(cast(i32)bullet_pos.x, cast(i32)bullet_pos.y, BULLET_RADIUS, WHITE)
     }
 
     // draw animation
     for enemy_pos, i in state.enemy_pos {
-        pose := state.enemy_pose[i]
-        anim := animations[pose.anim]
-        if pose.anim != 0 && len(anim.frame) > 0 {
-            draw_tex(anim.tex[anim.frame[pose.frame]], enemy_pos)
-            if state.enemy_radius[i] > 0 {
-                rl.DrawCircleLines(cast(i32) enemy_pos.x, cast(i32) enemy_pos.y, state.enemy_radius[i], RED)
+        //draw_tex(anim.tex[anim.frame[pose.frame]], enemy_pos)
+        if i == 0 {
+            switch boss_state {
+                case .Idle:
+                draw_tex(boss_face[0], enemy_pos)
+                case .Spinning:
+                draw_tex(boss_face[1], enemy_pos)
             }
+        }
+        if i == 1 {
+            switch boss_state {
+                case .Idle:
+                draw_tex(hand_l_tex[1], enemy_pos)
+                case .Spinning:
+                draw_tex(hand_l_tex[0], enemy_pos)
+            }
+        }
+        if i == 2 {
+            switch boss_state {
+                case .Idle:
+                draw_tex(hand_r_tex[1], enemy_pos)
+                case .Spinning:
+                draw_tex(hand_r_tex[0], enemy_pos)
+            }
+        }
+        if state.enemy_radius[i] > 0 {
+            rl.DrawCircleLines(cast(i32) enemy_pos.x, cast(i32) enemy_pos.y, state.enemy_radius[i], RED)
         }
     }
 
