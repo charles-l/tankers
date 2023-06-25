@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) !void {
     libraylib.addIncludePath("raylib/src");
     libraylib.addIncludePath("raylib/src/external/glfw/include/");
 
-    var command: []const []const u8 = &.{ "odin", "build", "src", "-no-entry-point", "-build-mode:obj", "-out:zig-out/odinsrc.o" };
+    var command: []const []const u8 = &.{ "odin", "build", "src", "-no-entry-point", "-build-mode:obj", "-out:zig-out/odinsrc.o", "-debug" };
     if (try makeOdinTargetString(b.allocator, target)) |odin_target_string| {
         const target_flag = try std.mem.concat(b.allocator, u8, &.{ "-target:", odin_target_string });
         command = try std.mem.concat(b.allocator, []const u8, &.{ command, &.{target_flag} });
