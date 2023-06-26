@@ -28,6 +28,7 @@ music: rl.Music
 boss_face: [4]rl.Texture
 hand_r_tex: [2]rl.Texture
 hand_l_tex: [2]rl.Texture
+dirt_tex: rl.Texture
 flash_tex: rl.Texture
 bg: rl.Texture
 
@@ -83,6 +84,7 @@ init :: proc "c" () {
     hand_r_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_r.001.png"), rl.LoadTexture("resources/hand_r.002.png")}
     hand_l_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_l.002.png"), rl.LoadTexture("resources/hand_l.001.png")}
     flash_tex = rl.LoadTexture("resources/muzzleflash.png")
+    dirt_tex = rl.LoadTexture("resources/dirtimpact.png")
     // TODO: parallax
     // TODO: birds
     bg = rl.LoadTexture("resources/bg.png")
@@ -315,10 +317,21 @@ update :: proc "c" () {
                 bullet_pos := state.bullet_pos[i]
                 for enemy_pos, j in state.enemy_pos {
                     if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[j], bullet_pos, BULLET_RADIUS) {
+                        dir := linalg.normalize(state.bullet_pos[i] - state.bullet_pos_old[i])
+                        state.enemy_pos[j] -= dir * 4
                         rl.PlaySound(sounds["dirt_impact.wav"])
+
+                        small_array.push(&impacts, Impact{
+                            pos = state.bullet_pos[i],
+                            ttl = 0.2,
+                            tex = &dirt_tex,
+                            frames = 3,
+                        })
+
                         state.bullet_pos[i].y = 10000
                         boss_state = .Guard
                         boss_state_time = 2
+
                     }
                 }
                 if bullet_pos.y > 10000 {
@@ -411,7 +424,7 @@ update :: proc "c" () {
     }
 
     for bullet_pos in state.bullet_pos {
-        rl.DrawCircle(cast(i32)bullet_pos.x, cast(i32)bullet_pos.y, BULLET_RADIUS, WHITE)
+        rl.DrawCircle(cast(i32)bullet_pos.x, cast(i32)bullet_pos.y, BULLET_RADIUS, BLACK)
     }
 
     // draw animation
@@ -456,6 +469,9 @@ update :: proc "c" () {
         }
     }
 
+    // draw beam
+    rl.DrawRectangleRec(Rectangle{x=state.beam.x - 10, y=state.beam.y - 10, width=1000, height=20}, GRAY)
+
     for impact in small_array.slice(&impacts) {
         frame_width := impact.tex.width / impact.frames
         frame := cast(i32) (impact.time / (impact.ttl / cast(f32) impact.frames))
@@ -468,8 +484,6 @@ update :: proc "c" () {
         WHITE)
     }
 
-    // draw beam
-    rl.DrawRectangleRec(Rectangle{x=state.beam.x - 10, y=state.beam.y - 10, width=1000, height=20}, GRAY)
     EndMode2D()
 }
 
