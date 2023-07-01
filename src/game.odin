@@ -32,7 +32,7 @@ dirt_tex: rl.Texture
 flash_tex: rl.Texture
 bg: rl.Texture
 
-DEBUG :: false
+DEBUG :: true
 
 main :: proc() {
     init()
@@ -51,18 +51,23 @@ vclamp :: proc(v: rl.Vector2, len: f32) -> rl.Vector2 {
     }
 }
 
+draw_text_centered :: proc(text: cstring, size: i32) {
+    w := rl.MeasureText(text, size)
+    rl.DrawText(text, rl.GetScreenWidth() / 2 - w / 2, rl.GetScreenHeight() / 2 - size / 2, size, rl.WHITE)
+}
+
 draw_tex :: proc(tex: rl.Texture, pos: rl.Vector2) {
     draw_tex_rot(tex, pos, 0)
 }
 
-draw_tex_rot :: proc(tex: rl.Texture, pos: rl.Vector2, angle: f32, flipx: f32 = 1.0) {
+draw_tex_rot :: proc(tex: rl.Texture, pos: rl.Vector2, angle: f32, flipx: f32 = 1.0, color: rl.Color = rl.WHITE) {
     using rl
     DrawTexturePro(tex,
     Rectangle{0, 0, cast(f32) tex.width * flipx, cast(f32) tex.height},
     Rectangle{pos.x, pos.y, cast(f32) tex.width, cast(f32) tex.height},
     Vector2{cast(f32) tex.width / 2, cast(f32) tex.height / 2},
     angle * (180 / math.π),
-    WHITE)
+    color)
 }
 
 @export
@@ -72,8 +77,8 @@ init :: proc "c" () {
     rl.SetTargetFPS(60);
     context = runtime.default_context()
     state.enemy_radius[0] = 50
-    state.enemy_radius[1] = 40
-    state.enemy_radius[2] = 40
+    state.enemy_radius[1] = 20
+    state.enemy_radius[2] = 20
     music = rl.LoadMusicStream("resources/tankers.mp3")
     rl.PlayMusicStream(music)
     boss_face = [4]rl.Texture{
@@ -99,6 +104,7 @@ init :: proc "c" () {
 }
 
 PLAYER_RADIUS :: 32
+PLAYER_HURT_RADIUS :: PLAYER_RADIUS * 0.55
 BULLET_RADIUS :: 4
 GRAVITY :: rl.Vector2{0,0.5}
 state := struct {
@@ -113,8 +119,10 @@ state := struct {
     enemy_pos: [10]rl.Vector2,
     enemy_pos_old: [10]rl.Vector2,
     enemy_radius: [10]f32,
+    health: f32,
 } {
-    beam = {400, 300}
+    beam = {400, 300},
+    health = 100,
 }
 
 Stun :: struct {
@@ -133,6 +141,10 @@ hitstop := Stun {
 
 hitsfx_limiter := Limiter {
     cooldown = 0.2
+}
+
+damage_limiter := Limiter {
+    cooldown = 0.4
 }
 
 Impact :: struct {
@@ -178,6 +190,11 @@ trigger :: proc(h: ^Limiter) -> bool {
     } else {
         return false
     }
+}
+
+is_limited :: proc(h: ^Limiter) -> bool {
+    t := cast(f32) rl.GetTime()
+    return t - h.last_time <= h.cooldown
 }
 
 verlet_integrate :: proc(pos: []rl.Vector2, old_pos: []rl.Vector2, damping: f32 = 1.0) {
@@ -283,8 +300,10 @@ update :: proc "c" () {
 
             if boss_state == .Idle {
                 state.enemy_pos[0] = {math.sin(cast(f32) rl.GetTime() / 2) * 30 + 90, math.sin(cast(f32) rl.GetTime() / 3) * 20 + 400}
-            } else if boss_state == .Chase || boss_state == .Spinning {
-                state.enemy_pos[0] += vclamp((state.player_pos[1] - {80, 0}) - state.enemy_pos[0], 4)
+            } else if boss_state == .Chase {
+                state.enemy_pos[0] += vclamp((state.player_pos[1] - {190, 0}) - state.enemy_pos[0], 3)
+            } else if boss_state == .Spinning {
+                state.enemy_pos[0] += vclamp((state.player_pos[1] - {100, 0}) - state.enemy_pos[0], 1)
             } else {
                 state.enemy_pos[0] += vclamp({40, 400} - state.enemy_pos[0], 1)
             }
@@ -349,8 +368,9 @@ update :: proc "c" () {
                     continue
                 }
                 if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[i], state.player_pos[1], PLAYER_RADIUS) {
+                    ev := enemy_pos - state.enemy_pos_old[i]
                     v := state.player_pos[1] - state.player_pos_old[1]
-                    rl.TraceLog(.INFO, "hit %f", cast(f64) linalg.vector_length(v))
+                    rl.TraceLog(.INFO, "hit %f %f", cast(f64) linalg.vector_length(v), cast(f64) linalg.vector_length(ev))
                     normal := linalg.normalize(state.player_pos[1] - enemy_pos)
                     if linalg.vector_length(v) > 30 {
                         // heavy damage
@@ -373,6 +393,7 @@ update :: proc "c" () {
                                 rl.PlaySound(sounds["impact.wav"])
                             }
                         }
+                        // passthrough
                         if linalg.dot(normal, linalg.normalize(state.player_pos[0] - enemy_pos)) > 0 {
                             state.player_pos[1] = enemy_pos + normal * (state.enemy_radius[i] + PLAYER_RADIUS + 0.1)
                             state.player_pos_old[1] = state.player_pos[1] - normal * linalg.vector_length(v) * 0.6
@@ -380,6 +401,15 @@ update :: proc "c" () {
                             tmp := state.player_pos_old[1]
                             state.player_pos_old[1] = state.player_pos[1]
                             state.player_pos[1]= tmp
+                        }
+
+                        // hurt player
+                        if linalg.vector_length(ev) > 10 && rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[i], state.player_pos[1], PLAYER_HURT_RADIUS) {
+                            state.player_pos[1] += linalg.normalize(ev) * 3
+                            if trigger(&damage_limiter) {
+                                state.health -= 10
+                                stun(&hitstop, 0.4)
+                            }
                         }
                     }
                 }
@@ -417,9 +447,14 @@ update :: proc "c" () {
         //DrawRectanglePro(Rectangle{state.player[1].pos.x, state.player[1].pos.y, 10, 40}, rl.Vector2{10, 20}, angle * (180 / math.π), GREEN)
         //turret := state.player[1].pos + up * 10
         //DrawRectanglePro(Rectangle{turret.x, turret.y, 8, 30}, rl.Vector2{10, 25}, angle * (180 / math.π), GREEN)
-        draw_tex_rot(tank_tex, state.player_pos[1], angle + math.π / 2)
+        color := WHITE
+        if is_limited(&damage_limiter) && i32(rl.GetTime() * 10) % 2 < 1 {
+            color = rl.Color{255, 100, 100, 255}
+        }
+        draw_tex_rot(tank_tex, state.player_pos[1], angle + math.π / 2, 1.0, color)
         when DEBUG {
             DrawCircleLines(cast(i32)state.player_pos[1].x, cast(i32)state.player_pos[1].y, PLAYER_RADIUS, PINK)
+            DrawCircleLines(cast(i32)state.player_pos[1].x, cast(i32)state.player_pos[1].y, PLAYER_HURT_RADIUS, GREEN)
         }
     }
 
@@ -485,5 +520,11 @@ update :: proc "c" () {
     }
 
     EndMode2D()
+
+    rl.DrawRectangle(10, 10, cast(i32) state.health * 4, 10, rl.WHITE)
+
+    if state.health <= 0 {
+        draw_text_centered("Mission Failed", 70)
+    }
 }
 
