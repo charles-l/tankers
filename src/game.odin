@@ -306,16 +306,20 @@ update :: proc "c" () {
                         boss_state_time = 2
                     }
                 }
+                target := rl.Vector2{40, 400}
+                speed: f32 = 1.0
                 #partial switch boss_state {
                     case .Idle:
-                    state.enemy_pos[0] = {math.sin(cast(f32) rl.GetTime() / 2) * 30 + 90, math.sin(cast(f32) rl.GetTime() / 3) * 20 + 400}
+                    target = {math.sin(cast(f32) rl.GetTime() / 2) * 30 + 90, math.sin(cast(f32) rl.GetTime() / 3) * 20 + 400}
                     case .Chase:
-                    state.enemy_pos[0] += vclamp((player.pos - {190, 0}) - state.enemy_pos[0], 3)
+                    target = player.pos - {190, 0}
+                    speed = 3
                     case .Spinning:
-                    state.enemy_pos[0] += vclamp((player.pos - {100, 0}) - state.enemy_pos[0], 1)
+                    target = player.pos - {100, 0}
                     case:
-                    state.enemy_pos[0] += vclamp({40, 400} - state.enemy_pos[0], 1)
+                    // pass
                 }
+                state.enemy_pos[0] += vclamp(target - state.enemy_pos[0], speed)
 
                 update_hand(state.enemy_pos[0], rl.Vector2{1, 1}, &state.enemy_pos[1], boss_state)
                 update_hand(state.enemy_pos[0], rl.Vector2{1, 1.9}, &state.enemy_pos[2], boss_state)
