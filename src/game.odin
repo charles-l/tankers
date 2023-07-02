@@ -59,9 +59,10 @@ vclamp :: proc(v: rl.Vector2, len: f32) -> rl.Vector2 {
 }
 
 draw_text_centered :: proc(text: cstring, size: i32) {
-    w := rl.MeasureText(text, size)
-    rl.DrawText(text, rl.GetScreenWidth() / 2 - w / 2, rl.GetScreenHeight() / 2 - size / 2 + 4, size, rl.BLACK)
-    rl.DrawText(text, rl.GetScreenWidth() / 2 - w / 2, rl.GetScreenHeight() / 2 - size / 2, size, rl.WHITE)
+    spacing := size / 10
+    s := rl.MeasureTextEx(rl.GetFontDefault(), text, cast(f32) size, cast(f32) spacing)
+    rl.DrawText(text, rl.GetScreenWidth() / 2 - cast(i32) s.x / 2, rl.GetScreenHeight() / 2 - cast(i32) s.y / 2 + 4, size, rl.BLACK)
+    rl.DrawText(text, rl.GetScreenWidth() / 2 - cast(i32) s.x / 2, rl.GetScreenHeight() / 2 - cast(i32) s.y / 2, size, rl.WHITE)
 }
 
 draw_tex :: proc(tex: rl.Texture, pos: rl.Vector2, color: rl.Color = rl.WHITE) {
@@ -777,11 +778,11 @@ update :: proc "c" () {
         }
         case .Victory:
         t := rl.GetTime() - victory_time
-        if t < 4 {
+        if t < 6 {
             draw_text_centered("Mission Success", 70)
-        } else if t < 8 {
-            draw_text_centered("Built in 20 days for\nBoss Bash Jam 2023", 40)
         } else if t < 12 {
+            draw_text_centered("Built in 20 days for\nBoss Bash Jam 2023", 40)
+        } else if t < 18 {
             draw_text_centered("Thanks for playing!", 70)
         }
         case .Lose:
