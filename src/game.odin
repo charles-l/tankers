@@ -7,6 +7,7 @@ import "core:math"
 import "core:math/linalg"
 import "core:math/noise"
 import "core:encoding/json"
+import "core:slice"
 
 import "core:runtime"
 import "core:container/small_array"
@@ -29,6 +30,7 @@ boss_face: [4]rl.Texture
 hand_r_tex: [2]rl.Texture
 hand_l_tex: [2]rl.Texture
 dirt_tex: rl.Texture
+explosion_tex: rl.Texture
 flash_tex: rl.Texture
 bg: rl.Texture
 
@@ -76,6 +78,9 @@ init :: proc "c" () {
     rl.InitAudioDevice()
     rl.SetTargetFPS(60);
     context = runtime.default_context()
+    // NOTE: THIS IS NECESSARY FOR A LOT OF ODIN TYPES TO WORK
+    #force_no_inline runtime._startup_runtime()
+
     state.enemy_radius[0] = 50
     state.enemy_radius[1] = 20
     state.enemy_radius[2] = 20
@@ -90,6 +95,7 @@ init :: proc "c" () {
     hand_l_tex = [2]rl.Texture{rl.LoadTexture("resources/hand_l.002.png"), rl.LoadTexture("resources/hand_l.001.png")}
     flash_tex = rl.LoadTexture("resources/muzzleflash.png")
     dirt_tex = rl.LoadTexture("resources/dirtimpact.png")
+    explosion_tex = rl.LoadTexture("resources/explosion.png")
     // TODO: parallax
     // TODO: birds
     bg = rl.LoadTexture("resources/bg.png")
@@ -103,13 +109,23 @@ init :: proc "c" () {
     }
 }
 
+PlayerAlive :: struct {
+    pos: rl.Vector2,
+    pos_old: rl.Vector2,
+    health: f32,
+}
+
+PlayerDead :: struct {}
+
 PLAYER_RADIUS :: 32
 PLAYER_HURT_RADIUS :: PLAYER_RADIUS * 0.55
 BULLET_RADIUS :: 4
 GRAVITY :: rl.Vector2{0,0.5}
 state := struct {
-    player_pos: [2]rl.Vector2,
-    player_pos_old: [2]rl.Vector2,
+    player: union{
+        PlayerAlive,
+        PlayerDead,
+    },
 
     bullet_pos: [dynamic]rl.Vector2,
     bullet_pos_old: [dynamic]rl.Vector2,
@@ -119,10 +135,9 @@ state := struct {
     enemy_pos: [10]rl.Vector2,
     enemy_pos_old: [10]rl.Vector2,
     enemy_radius: [10]f32,
-    health: f32,
 } {
+    player = PlayerAlive{health=10},
     beam = {400, 300},
-    health = 100,
 }
 
 Stun :: struct {
@@ -248,6 +263,14 @@ update_hand :: proc(body, target: rl.Vector2, limb: ^rl.Vector2, bstate: BossSta
     }
 }
 
+vec_up :: proc(v1: rl.Vector2, v2: rl.Vector2) -> rl.Vector2 {
+    return linalg.normalize(v1 - v2)
+}
+
+vec_ccw :: proc(v: rl.Vector2) -> rl.Vector2 {
+    return rl.Vector2{v.y, -v.x}
+}
+
 boss_state_time: f32 = 2.0
 boss_state: BossState
 
@@ -261,104 +284,119 @@ update :: proc "c" () {
     rl.DrawTexture(bg, 0, 0, WHITE)
     rl.UpdateMusicStream(music)
 
-    up := linalg.normalize(state.player_pos[0] - state.player_pos[1])
     { // logic/physics
         if(!update_stunned(&hitstop)) {
-            state.beam.x += math.clamp(cast(f32)GetMouseX() - state.beam.x, -4, 4)
-            if IsMouseButtonReleased(.LEFT) {
-                left := Vector2{up.y, -up.x}
-                // give it a force from the right
-                state.player_pos_old[1] += left * 40
-
-                rl.PlaySound(sounds["shot.wav"])
-
-                { // aim assist
-                    ideal := linalg.normalize(state.enemy_pos[0] + {0, -70} - state.player_pos[1])
-                    d := linalg.dot(ideal, left)
-                    if 0.8 < d && d < 1 {
-                        rl.TraceLog(.INFO, "aim assist %f", cast(f64) linalg.dot(ideal, left))
-                        left = ideal
-                    }
-                }
-
-                small_array.push(&impacts, Impact{
-                    pos = state.player_pos[1] + left * 30,
-                    ttl = 0.2,
-                    tex = &flash_tex,
-                    frames = 3,
-                })
-
-                bullet_pos_old := state.player_pos[1]
-                bullet_pos := bullet_pos_old + left * 30
-
-                append(&state.bullet_pos, bullet_pos)
-                append(&state.bullet_pos_old, bullet_pos_old)
-            }
-            verlet_integrate(state.player_pos[:], state.player_pos_old[:])
-            verlet_integrate(state.bullet_pos[:], state.bullet_pos_old[:])
-            verlet_integrate(state.enemy_pos[:], state.enemy_pos_old[:], 0.7)
-
-            if boss_state == .Idle {
-                state.enemy_pos[0] = {math.sin(cast(f32) rl.GetTime() / 2) * 30 + 90, math.sin(cast(f32) rl.GetTime() / 3) * 20 + 400}
-            } else if boss_state == .Chase {
-                state.enemy_pos[0] += vclamp((state.player_pos[1] - {190, 0}) - state.enemy_pos[0], 3)
-            } else if boss_state == .Spinning {
-                state.enemy_pos[0] += vclamp((state.player_pos[1] - {100, 0}) - state.enemy_pos[0], 1)
-            } else {
-                state.enemy_pos[0] += vclamp({40, 400} - state.enemy_pos[0], 1)
-            }
-
-            boss_state_time -= rl.GetFrameTime()
-            if boss_state_time < 0 {
-                if dist(state.player_pos[1], state.enemy_pos[0]) < 400{
-                    boss_state = .Spinning
+            { // boss update
+                boss_state_time -= rl.GetFrameTime()
+                player, alive := state.player.(PlayerAlive)
+                if !alive {
+                    boss_state = .Idle
                 } else {
-                    if rl.GetRandomValue(0, 10) < 5 {
-                        boss_state = .Idle
-                    } else {
-                        boss_state = .Chase
+                    if boss_state_time < 0 {
+                        if dist(state.player.(PlayerAlive).pos, state.enemy_pos[0]) < 400{
+                            boss_state = .Spinning
+                        } else {
+                            if rl.GetRandomValue(0, 10) < 5 {
+                                boss_state = .Idle
+                            } else {
+                                boss_state = .Chase
+                            }
+                        }
+
+                        boss_state_time = 2
                     }
                 }
+                #partial switch boss_state {
+                    case .Idle:
+                    state.enemy_pos[0] = {math.sin(cast(f32) rl.GetTime() / 2) * 30 + 90, math.sin(cast(f32) rl.GetTime() / 3) * 20 + 400}
+                    case .Chase:
+                    state.enemy_pos[0] += vclamp((player.pos - {190, 0}) - state.enemy_pos[0], 3)
+                    case .Spinning:
+                    state.enemy_pos[0] += vclamp((player.pos - {100, 0}) - state.enemy_pos[0], 1)
+                    case:
+                    state.enemy_pos[0] += vclamp({40, 400} - state.enemy_pos[0], 1)
+                }
 
-                boss_state_time = 2
+                update_hand(state.enemy_pos[0], rl.Vector2{1, 1}, &state.enemy_pos[1], boss_state)
+                update_hand(state.enemy_pos[0], rl.Vector2{1, 1.9}, &state.enemy_pos[2], boss_state)
             }
 
-            update_hand(state.enemy_pos[0], rl.Vector2{1, 1}, &state.enemy_pos[1], boss_state)
-            update_hand(state.enemy_pos[0], rl.Vector2{1, 1.9}, &state.enemy_pos[2], boss_state)
+            { // player update
+                state.beam.x += math.clamp(cast(f32)GetMouseX() - state.beam.x, -4, 4)
+                switch player in &state.player {
+                    case PlayerAlive:
+                    if IsMouseButtonReleased(.LEFT) {
+                        left := vec_ccw(vec_up(state.beam, player.pos))
+                        // give it a force from the right
+                        player.pos_old += left * 40
 
-            for i in 0..<10 {
-                state.player_pos[0] = state.beam
-                verlet_solve_constraints(state.player_pos[0], &state.player_pos[1], PLAYER_MAX_DIST)
-            }
+                        rl.PlaySound(sounds["shot.wav"])
 
-
-            for i := 0; i < len(state.bullet_pos); {
-                bullet_pos := state.bullet_pos[i]
-                for enemy_pos, j in state.enemy_pos {
-                    if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[j], bullet_pos, BULLET_RADIUS) {
-                        dir := linalg.normalize(state.bullet_pos[i] - state.bullet_pos_old[i])
-                        state.enemy_pos[j] -= dir * 4
-                        rl.PlaySound(sounds["dirt_impact.wav"])
+                        { // aim assist
+                            ideal := linalg.normalize(state.enemy_pos[0] + {0, -70} - player.pos)
+                            d := linalg.dot(ideal, left)
+                            if 0.8 < d && d < 1 {
+                                rl.TraceLog(.INFO, "aim assist %f", cast(f64) linalg.dot(ideal, left))
+                                left = ideal
+                            }
+                        }
 
                         small_array.push(&impacts, Impact{
-                            pos = state.bullet_pos[i],
+                            pos = player.pos + left * 30,
                             ttl = 0.2,
-                            tex = &dirt_tex,
+                            tex = &flash_tex,
                             frames = 3,
                         })
 
-                        state.bullet_pos[i].y = 10000
-                        boss_state = .Guard
-                        boss_state_time = 2
+                        bullet_pos_old := player.pos
+                        bullet_pos := bullet_pos_old + left * 30
 
+                        append(&state.bullet_pos, bullet_pos)
+                        append(&state.bullet_pos_old, bullet_pos_old)
                     }
+
+                    verlet_integrate(slice.from_ptr(&player.pos, 1), slice.from_ptr(&player.pos_old, 1))
+                    for i in 0..<10 {
+                        verlet_solve_constraints(state.beam, &player.pos, PLAYER_MAX_DIST)
+                    }
+
+                    case PlayerDead:
+                    //pass
                 }
-                if bullet_pos.y > 10000 {
-                    ordered_remove(&state.bullet_pos, i)
-                    ordered_remove(&state.bullet_pos_old, i)
-                    continue
-                } else {
-                    i += 1
+            }
+
+            verlet_integrate(state.bullet_pos[:], state.bullet_pos_old[:])
+            verlet_integrate(state.enemy_pos[:], state.enemy_pos_old[:], 0.7)
+
+            { // update bullets
+                for i := 0; i < len(state.bullet_pos); {
+                    bullet_pos := state.bullet_pos[i]
+                    for enemy_pos, j in state.enemy_pos {
+                        if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[j], bullet_pos, BULLET_RADIUS) {
+                            dir := linalg.normalize(state.bullet_pos[i] - state.bullet_pos_old[i])
+                            state.enemy_pos[j] -= dir * 4
+                            rl.PlaySound(sounds["dirt_impact.wav"])
+
+                            small_array.push(&impacts, Impact{
+                                pos = state.bullet_pos[i],
+                                ttl = 0.2,
+                                tex = &dirt_tex,
+                                frames = 3,
+                            })
+
+                            state.bullet_pos[i].y = 10000
+                            boss_state = .Guard
+                            boss_state_time = 2
+
+                        }
+                    }
+                    if bullet_pos.y > 10000 {
+                        ordered_remove(&state.bullet_pos, i)
+                        ordered_remove(&state.bullet_pos_old, i)
+                        continue
+                    } else {
+                        i += 1
+                    }
                 }
             }
 
@@ -367,11 +405,10 @@ update :: proc "c" () {
                 if state.enemy_radius[i] == 0 {
                     continue
                 }
-                if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[i], state.player_pos[1], PLAYER_RADIUS) {
+                if player, player_alive := &state.player.(PlayerAlive); player_alive && rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[i], player.pos, PLAYER_RADIUS) {
                     ev := enemy_pos - state.enemy_pos_old[i]
-                    v := state.player_pos[1] - state.player_pos_old[1]
-                    rl.TraceLog(.INFO, "hit %f %f", cast(f64) linalg.vector_length(v), cast(f64) linalg.vector_length(ev))
-                    normal := linalg.normalize(state.player_pos[1] - enemy_pos)
+                    v := player.pos - player.pos_old
+                    normal := linalg.normalize(player.pos - enemy_pos)
                     if linalg.vector_length(v) > 30 {
                         // heavy damage
                         if trigger(&hitsfx_limiter) {
@@ -394,21 +431,31 @@ update :: proc "c" () {
                             }
                         }
                         // passthrough
-                        if linalg.dot(normal, linalg.normalize(state.player_pos[0] - enemy_pos)) > 0 {
-                            state.player_pos[1] = enemy_pos + normal * (state.enemy_radius[i] + PLAYER_RADIUS + 0.1)
-                            state.player_pos_old[1] = state.player_pos[1] - normal * linalg.vector_length(v) * 0.6
+                        if linalg.dot(normal, linalg.normalize(state.beam - enemy_pos)) > 0 {
+                            player.pos = enemy_pos + normal * (state.enemy_radius[i] + PLAYER_RADIUS + 0.1)
+                            player.pos_old = player.pos - normal * linalg.vector_length(v) * 0.6
                         } else {
-                            tmp := state.player_pos_old[1]
-                            state.player_pos_old[1] = state.player_pos[1]
-                            state.player_pos[1]= tmp
+                            tmp := player.pos_old
+                            player.pos_old = player.pos
+                            player.pos= tmp
                         }
 
                         // hurt player
-                        if linalg.vector_length(ev) > 10 && rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[i], state.player_pos[1], PLAYER_HURT_RADIUS) {
-                            state.player_pos[1] += linalg.normalize(ev) * 3
+                        if linalg.vector_length(ev) > 10 && rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[i], player.pos, PLAYER_HURT_RADIUS) {
+                            player.pos += linalg.normalize(ev) * 3
                             if trigger(&damage_limiter) {
-                                state.health -= 10
+                                player.health -= 10
                                 stun(&hitstop, 0.4)
+                            }
+
+                            if player.health < 0 {
+                                small_array.push(&impacts, Impact{
+                                    pos = player.pos,
+                                    ttl = 0.6,
+                                    tex = &explosion_tex,
+                                    frames = 6,
+                                })
+                                state.player = PlayerDead{}
                             }
                         }
                     }
@@ -439,10 +486,11 @@ update :: proc "c" () {
 
     BeginMode2D(camera)
 
-    { // draw player
-        DrawLineV(state.player_pos[0], state.player_pos[1], rl.BLACK)
+    _, ok := state.player.(PlayerAlive)
+    if player, player_alive := state.player.(PlayerAlive); player_alive { // draw player
+        DrawLineV(state.beam, player.pos, rl.BLACK)
 
-        diff := state.player_pos[0]- state.player_pos[1]
+        diff := state.beam - player.pos
         angle := math.atan2(diff.y, diff.x)
         //DrawRectanglePro(Rectangle{state.player[1].pos.x, state.player[1].pos.y, 10, 40}, rl.Vector2{10, 20}, angle * (180 / math.π), GREEN)
         //turret := state.player[1].pos + up * 10
@@ -451,10 +499,10 @@ update :: proc "c" () {
         if is_limited(&damage_limiter) && i32(rl.GetTime() * 10) % 2 < 1 {
             color = rl.Color{255, 100, 100, 255}
         }
-        draw_tex_rot(tank_tex, state.player_pos[1], angle + math.π / 2, 1.0, color)
+        draw_tex_rot(tank_tex, player.pos, angle + math.π / 2, 1.0, color)
         when DEBUG {
-            DrawCircleLines(cast(i32)state.player_pos[1].x, cast(i32)state.player_pos[1].y, PLAYER_RADIUS, PINK)
-            DrawCircleLines(cast(i32)state.player_pos[1].x, cast(i32)state.player_pos[1].y, PLAYER_HURT_RADIUS, GREEN)
+            DrawCircleLines(cast(i32)player.pos.x, cast(i32)player.pos.y, PLAYER_RADIUS, PINK)
+            DrawCircleLines(cast(i32)player.pos.x, cast(i32)player.pos.y, PLAYER_HURT_RADIUS, GREEN)
         }
     }
 
@@ -464,7 +512,6 @@ update :: proc "c" () {
 
     // draw animation
     for enemy_pos, i in state.enemy_pos {
-        //draw_tex(anim.tex[anim.frame[pose.frame]], enemy_pos)
         if i == 0 {
             switch boss_state {
                 case .Idle:
@@ -510,7 +557,6 @@ update :: proc "c" () {
     for impact in small_array.slice(&impacts) {
         frame_width := impact.tex.width / impact.frames
         frame := cast(i32) (impact.time / (impact.ttl / cast(f32) impact.frames))
-        rl.TraceLog(.INFO, "frame: %d %f", frame, cast(f64) frame_width)
         rl.DrawTexturePro(impact.tex^,
         Rectangle{cast(f32) frame_width * cast(f32) frame, 0, cast(f32) frame_width, cast(f32) impact.tex.height},
         Rectangle{impact.pos.x, impact.pos.y, cast(f32) frame_width, cast(f32) impact.tex.height},
@@ -521,9 +567,9 @@ update :: proc "c" () {
 
     EndMode2D()
 
-    rl.DrawRectangle(10, 10, cast(i32) state.health * 4, 10, rl.WHITE)
-
-    if state.health <= 0 {
+    if player, player_alive := state.player.(PlayerAlive); player_alive {
+        rl.DrawRectangle(10, 10, cast(i32) player.health * 4, 10, rl.WHITE)
+    } else {
         draw_text_centered("Mission Failed", 70)
     }
 }
