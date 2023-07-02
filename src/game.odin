@@ -14,6 +14,12 @@ import "core:container/small_array"
 import "core:path/filepath"
 import "core:strings"
 
+LevelProcs :: struct {
+    init: proc(^State),
+    update: proc(^State),
+    draw: proc(State),
+}
+
 // TODO scenarios:
 // tank vs small enemies, lead up to miniboss?
 
@@ -23,14 +29,19 @@ _fltused: c.int = 0
 impact_tex: rl.Texture
 tank_tex: rl.Texture
 sounds: map[string]rl.Sound
+songs: [2]rl.Music
 music: rl.Music
+victory_music: rl.Music
 boss_face: [4]rl.Texture
 hand_r_tex: [2]rl.Texture
 hand_l_tex: [2]rl.Texture
+enemy_tex: rl.Texture
 dirt_tex: rl.Texture
 explosion_tex: rl.Texture
 flash_tex: rl.Texture
 bg: rl.Texture
+
+state: State
 
 DEBUG :: true
 
@@ -67,14 +78,25 @@ draw_tex_rot :: proc(tex: rl.Texture, pos: rl.Vector2, angle: f32, flipx: f32 = 
     color)
 }
 
-init_base :: proc(state: ^State) {
+reset_level :: proc(state: ^State) {
+    level := state.level
+    rl.StopMusicStream(music)
+    music = songs[level]
+    rl.PlayMusicStream(music)
+
     state^ = State{
+        level = level,
         player = PlayerAlive{pos={400, 500}, pos_old={400, 500}, health=10},
         beam = {400, 300},
     }
+
+    levels[state.level].init(state)
 }
 
 init_boss :: proc(state: ^State) {
+    music = rl.LoadMusicStream("resources/tankers.mp3")
+    rl.PlayMusicStream(music)
+
     state.enemy_pos[0] = {40, 400}
     state.enemy_pos_old[0] = state.enemy_pos[0]
     state.enemy_radius[0] = 50
@@ -185,8 +207,85 @@ draw_boss :: proc(state: State) {
     }
 }
 
+init_level1 :: proc(state: ^State) {
+    music = rl.LoadMusicStream("resources/tankers-combat.mp3")
+    rl.PlayMusicStream(music)
 
-state: State
+    for i in 0..<40 {
+        state.enemy_health[i] = 100
+        state.enemy_radius[i] = 12
+        state.enemy_pos[i] = {20, cast(f32)i * 20}
+    }
+}
+
+update_level1 :: proc(state: ^State) {
+    for pos, i in state.enemy_pos {
+        target := rl.Vector2{1000, 400}
+        if player, player_alive := state.player.(PlayerAlive); player_alive {
+            target = player.pos
+        }
+
+
+        alignmentv := rl.Vector2{}
+        cohesionv := rl.Vector2{}
+        separationv := rl.Vector2{}
+        {
+            nb_count := cast(f32) 0.0
+            for other_pos, j in state.enemy_pos {
+                if state.enemy_radius[j] <= 0 {
+                    continue
+                }
+                if j == i {
+                    continue
+                }
+                if dist(other_pos, pos) < 50 {
+                    other_v := other_pos - state.enemy_pos_old[j]
+                    alignmentv += other_v
+
+                    cohesionv += other_pos
+                    nb_count += 1
+
+                    separationv += other_pos - pos
+                }
+            }
+            if nb_count > 0 {
+                alignmentv = linalg.normalize(alignmentv)
+                cohesionv = linalg.normalize((cohesionv / nb_count) - pos)
+                separationv = linalg.normalize(separationv) * -1
+            }
+        }
+
+        v := vclamp(target - pos, 0.5) + (0.15 * alignmentv) + (0.3 * separationv) + (0.05 * cohesionv)
+
+        state.enemy_pos[i] += v * 5
+    }
+}
+
+draw_level1 :: proc(state: State) {
+    for pos, i in state.enemy_pos {
+        if state.enemy_radius[i] > 0 {
+            draw_tex(enemy_tex, pos)
+        }
+        when DEBUG {
+            rl.DrawCircleLines(cast(i32) pos.x, cast(i32) pos.y, state.enemy_radius[i], rl.RED)
+        }
+    }
+}
+
+levels := [?]LevelProcs {
+    {
+        init = init_level1,
+        update = update_level1,
+        draw = draw_level1,
+    },
+    {
+        init = init_boss,
+        update = update_boss,
+        draw = draw_boss,
+    }
+}
+
+
 @export
 init :: proc "c" () {
     rl.InitWindow(800, 600, "TANKERS")
@@ -196,8 +295,11 @@ init :: proc "c" () {
     // NOTE: THIS IS NECESSARY FOR A LOT OF ODIN TYPES TO WORK
     #force_no_inline runtime._startup_runtime()
 
-    music = rl.LoadMusicStream("resources/tankers.mp3")
-    rl.PlayMusicStream(music)
+    victory_music = rl.LoadMusicStream("resources/tankers-victory.mp3")
+    victory_music.looping = false
+    rl.PlayMusicStream(victory_music)
+
+    enemy_tex = rl.LoadTexture("resources/enemy.png")
     boss_face = [4]rl.Texture{
         rl.LoadTexture("resources/boss-face1.png"),
         rl.LoadTexture("resources/boss-face2.png"),
@@ -220,8 +322,12 @@ init :: proc "c" () {
         sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
     }
 
-    init_base(&state)
-    init_boss(&state)
+    songs[0] = rl.LoadMusicStream("resources/tankers-combat.mp3")
+    songs[1] = rl.LoadMusicStream("resources/tankers.mp3")
+
+    music = songs[0]
+
+    reset_level(&state)
 }
 
 PlayerAlive :: struct {
@@ -243,9 +349,16 @@ BULLET_RADIUS :: 4
 GRAVITY :: rl.Vector2{0,0.5}
 
 State :: struct {
+    level: int,
     player: union{
         PlayerAlive,
         PlayerDead,
+    },
+
+    game_state: enum {
+        Gameplay,
+        Victory,
+        Lose,
     },
 
     bullet_pos: [dynamic]rl.Vector2,
@@ -253,12 +366,12 @@ State :: struct {
 
     beam: rl.Vector2,
 
-    enemy_pos: [10]rl.Vector2,
-    enemy_pos_old: [10]rl.Vector2,
-    enemy_radius: [10]f32,
-    enemy_health: [10]f32,
-    enemy_damage_mask: [10]bit_set[DamageMask],
-    enemy_last_damage_time: [10]f32,
+    enemy_pos: [40]rl.Vector2,
+    enemy_pos_old: [40]rl.Vector2,
+    enemy_radius: [40]f32,
+    enemy_health: [40]f32,
+    enemy_damage_mask: [40]bit_set[DamageMask],
+    enemy_last_damage_time: [40]f32,
 
     boss_state_time: f32,
     boss_state: BossState,
@@ -400,6 +513,8 @@ vec_ccw :: proc(v: rl.Vector2) -> rl.Vector2 {
     return rl.Vector2{v.y, -v.x}
 }
 
+victory_time := 0.0
+
 @export
 update :: proc "c" () {
     using rl
@@ -410,14 +525,19 @@ update :: proc "c" () {
     rl.DrawTexture(bg, 0, 0, WHITE)
     rl.UpdateMusicStream(music)
 
-    if rl.IsKeyReleased(.R) {
-        init_base(&state)
-        init_boss(&state)
+    if rl.IsKeyReleased(.LEFT_BRACKET) {
+        state.level -= 1
+        reset_level(&state)
+    }
+
+    if rl.IsKeyReleased(.RIGHT_BRACKET) {
+        state.level += 1
+        reset_level(&state)
     }
 
     { // logic/physics
         if(!update_stunned(&hitstop)) {
-            update_boss(&state)
+            levels[state.level].update(&state)
 
             { // player update
                 state.beam.x += math.clamp(cast(f32)GetMouseX() - state.beam.x, -4, 4)
@@ -618,7 +738,7 @@ update :: proc "c" () {
         rl.DrawCircle(cast(i32)bullet_pos.x, cast(i32)bullet_pos.y, BULLET_RADIUS, BLACK)
     }
 
-    draw_boss(state)
+    levels[state.level].draw(state)
 
     // draw beam
     rl.DrawRectangleRec(Rectangle{x=state.beam.x - 10, y=state.beam.y - 10, width=1000, height=20}, GRAY)
@@ -636,17 +756,39 @@ update :: proc "c" () {
 
     EndMode2D()
 
-    if player, player_alive := state.player.(PlayerAlive); player_alive {
-        rl.DrawRectangle(10, 10, cast(i32) player.health * 4, 10, rl.WHITE)
-        all := true
-        for r in state.enemy_radius {
-            all = all && r == 0
+    switch state.game_state {
+        case .Gameplay:
+        if player, player_alive := state.player.(PlayerAlive); player_alive {
+            rl.DrawRectangle(10, 10, cast(i32) player.health * 4, 10, rl.WHITE)
+            all := true
+            for r in state.enemy_radius {
+                if r != 0 {
+                    all = false
+                    break
+                }
+            }
+            if all {
+                state.game_state = .Victory
+                music = victory_music
+                victory_time = rl.GetTime()
+            }
+        } else {
+            state.game_state = .Lose
         }
-        if all {
+        case .Victory:
+        t := rl.GetTime() - victory_time
+        if t < 4 {
             draw_text_centered("Mission Success", 70)
+        } else if t < 8 {
+            draw_text_centered("Built in 20 days for\nBoss Bash Jam 2023", 40)
+        } else if t < 12 {
+            draw_text_centered("Thanks for playing!", 70)
         }
-    } else {
+        case .Lose:
         draw_text_centered("Mission Failed\nHit [R] to restart", 70)
+        if rl.IsKeyReleased(.R) {
+            reset_level(&state)
+        }
     }
 }
 
