@@ -39,7 +39,7 @@ enemy_tex: rl.Texture
 dirt_tex: rl.Texture
 explosion_tex: rl.Texture
 flash_tex: rl.Texture
-bg: rl.Texture
+bg: [3]rl.Texture
 
 state: State
 
@@ -313,7 +313,11 @@ init :: proc "c" () {
     explosion_tex = rl.LoadTexture("resources/explosion.png")
     // TODO: parallax
     // TODO: birds
-    bg = rl.LoadTexture("resources/bg.png")
+    bg = {
+        rl.LoadTexture("resources/bg0.png"),
+        rl.LoadTexture("resources/bg1.png"),
+        rl.LoadTexture("resources/bg2.png"),
+    }
 
     sounds = make(map[string]rl.Sound)
     impact_tex = rl.LoadTexture("resources/impact.png")
@@ -523,7 +527,24 @@ update :: proc "c" () {
     BeginDrawing();
     defer EndDrawing();
     ClearBackground(GRAY);
-    rl.DrawTexture(bg, 0, 0, WHITE)
+    rl.DrawTexturePro(bg[0],
+        rl.Rectangle{cast(f32) rl.GetTime() * 8, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        {0, 0},
+        0,
+        WHITE)
+    rl.DrawTexturePro(bg[1],
+        rl.Rectangle{cast(f32) rl.GetTime() * 16, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        {0, 0},
+        0,
+        WHITE)
+    rl.DrawTexturePro(bg[2],
+        rl.Rectangle{cast(f32) rl.GetTime() * 20, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        {0, 0},
+        0,
+        WHITE)
     rl.UpdateMusicStream(music)
 
     if rl.IsKeyReleased(.LEFT_BRACKET) {
