@@ -14,10 +14,18 @@ import "core:container/small_array"
 import "core:path/filepath"
 import "core:strings"
 
+GameState :: enum {
+    Gameplay,
+    Victory,
+    Victory_Final,
+    Lose,
+}
+
 LevelProcs :: struct {
     init: proc(^State),
     update: proc(^State),
     draw: proc(State),
+    win_state: GameState,
 }
 
 // TODO scenarios:
@@ -35,15 +43,17 @@ victory_music: rl.Music
 boss_face: [4]rl.Texture
 hand_r_tex: [2]rl.Texture
 hand_l_tex: [2]rl.Texture
+jetblast_tex: rl.Texture
 enemy_tex: rl.Texture
 dirt_tex: rl.Texture
 explosion_tex: rl.Texture
+boss_death_tex: rl.Texture
 flash_tex: rl.Texture
 bg: [3]rl.Texture
 
 state: State
 
-DEBUG :: true
+DEBUG :: false
 
 dist :: proc(a, b: rl.Vector2) -> f32 {
     return linalg.vector_length(a - b)
@@ -86,6 +96,7 @@ reset_level :: proc(state: ^State) {
     rl.PlayMusicStream(music)
 
     state^ = State{
+        aim_assist = false,
         level = level,
         player = PlayerAlive{pos={400, 500}, pos_old={400, 500}, health=10},
         beam = {400, 300},
@@ -95,6 +106,7 @@ reset_level :: proc(state: ^State) {
 }
 
 init_boss :: proc(state: ^State) {
+    state.aim_assist = true
     music = rl.LoadMusicStream("resources/tankers.mp3")
     rl.PlayMusicStream(music)
 
@@ -213,52 +225,65 @@ init_level1 :: proc(state: ^State) {
     rl.PlayMusicStream(music)
 
     for i in 0..<40 {
-        state.enemy_health[i] = 100
+        state.enemy_health[i] = 10
         state.enemy_radius[i] = 12
         state.enemy_pos[i] = {20, cast(f32)i * 20}
+        state.enemy_damage_mask[i] += {.Bullet, .Hit}
     }
 }
 
 update_level1 :: proc(state: ^State) {
     for pos, i in state.enemy_pos {
+        if state.enemy_radius[i] <= 0 {
+            continue
+        }
+
         target := rl.Vector2{1000, 400}
         if player, player_alive := state.player.(PlayerAlive); player_alive {
-            target = player.pos
+            if (cast(i32) rl.GetTime()) % 10 < 2 {
+                target = player.pos
+            } else {
+                target = {100, player.pos.y + 10}
+            }
         }
 
 
         alignmentv := rl.Vector2{}
-        cohesionv := rl.Vector2{}
         separationv := rl.Vector2{}
+        cohesionv := rl.Vector2{}
         {
             nb_count := cast(f32) 0.0
+            other_alive := 0
             for other_pos, j in state.enemy_pos {
-                if state.enemy_radius[j] <= 0 {
+                if state.enemy_radius[j] <= 0 || j == i {
                     continue
                 }
-                if j == i {
-                    continue
-                }
-                if dist(other_pos, pos) < 50 {
-                    other_v := other_pos - state.enemy_pos_old[j]
-                    alignmentv += other_v
 
-                    cohesionv += other_pos
-                    nb_count += 1
-
-                    separationv += other_pos - pos
+                d := dist(other_pos, pos)
+                if d < 40 {
+                    separationv += linalg.normalize(pos - other_pos) * (40 - d)
                 }
+
+                other_v := other_pos - state.enemy_pos_old[j]
+                alignmentv += other_v
+
+                cohesionv += other_pos
+                other_alive += 1
             }
-            if nb_count > 0 {
-                alignmentv = linalg.normalize(alignmentv)
-                cohesionv = linalg.normalize((cohesionv / nb_count) - pos)
-                separationv = linalg.normalize(separationv) * -1
+
+            if other_alive > 0 {
+                cohesionv /= cast(f32) other_alive
+                cohesionv -= pos
             }
+
+            alignmentv /= 8
         }
 
-        v := vclamp(target - pos, 0.5) + (0.15 * alignmentv) + (0.3 * separationv) + (0.05 * cohesionv)
+        //v := vclamp(target - pos, 0.5) + (0.15 * alignmentv) + (0.3 * separationv) + (0.05 * cohesionv)
+        //v := vclamp(target - pos, 0.3) + (0.2 * alignmentv) + (0.5 * separationv) //+ (0.05 * cohesionv)
+        v := vclamp(vclamp(target - pos, 30) + alignmentv + separationv + vclamp(cohesionv, 5), 2)
 
-        state.enemy_pos[i] += v * 5
+        state.enemy_pos[i] += v
     }
 }
 
@@ -278,11 +303,13 @@ levels := [?]LevelProcs {
         init = init_level1,
         update = update_level1,
         draw = draw_level1,
+        win_state = .Victory,
     },
     {
         init = init_boss,
         update = update_boss,
         draw = draw_boss,
+        win_state = .Victory_Final,
     }
 }
 
@@ -301,6 +328,7 @@ init :: proc "c" () {
     rl.PlayMusicStream(victory_music)
 
     enemy_tex = rl.LoadTexture("resources/enemy.png")
+    jetblast_tex = rl.LoadTexture("resources/jetblast.png")
     boss_face = [4]rl.Texture{
         rl.LoadTexture("resources/boss-face1.png"),
         rl.LoadTexture("resources/boss-face2.png"),
@@ -311,6 +339,7 @@ init :: proc "c" () {
     flash_tex = rl.LoadTexture("resources/muzzleflash.png")
     dirt_tex = rl.LoadTexture("resources/dirtimpact.png")
     explosion_tex = rl.LoadTexture("resources/explosion.png")
+    boss_death_tex = rl.LoadTexture("resources/boss-death.png")
     // TODO: parallax
     // TODO: birds
     bg = {
@@ -354,17 +383,14 @@ BULLET_RADIUS :: 4
 GRAVITY :: rl.Vector2{0,0.5}
 
 State :: struct {
+    aim_assist: bool,
     level: int,
     player: union{
         PlayerAlive,
         PlayerDead,
     },
 
-    game_state: enum {
-        Gameplay,
-        Victory,
-        Lose,
-    },
+    game_state: GameState,
 
     bullet_pos: [dynamic]rl.Vector2,
     bullet_pos_old: [dynamic]rl.Vector2,
@@ -528,24 +554,26 @@ update :: proc "c" () {
     defer EndDrawing();
     ClearBackground(GRAY);
     rl.DrawTexturePro(bg[0],
-        rl.Rectangle{cast(f32) rl.GetTime() * 8, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.Rectangle{cast(f32) -rl.GetTime() * 8, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         {0, 0},
         0,
         WHITE)
     rl.DrawTexturePro(bg[1],
-        rl.Rectangle{cast(f32) rl.GetTime() * 16, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.Rectangle{cast(f32) -rl.GetTime() * 16, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         {0, 0},
         0,
         WHITE)
     rl.DrawTexturePro(bg[2],
-        rl.Rectangle{cast(f32) rl.GetTime() * 20, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.Rectangle{cast(f32) -rl.GetTime() * 20, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         {0, 0},
         0,
         WHITE)
     rl.UpdateMusicStream(music)
+
+    jetblast := false
 
     if rl.IsKeyReleased(.LEFT_BRACKET) {
         state.level -= 1
@@ -572,7 +600,7 @@ update :: proc "c" () {
 
                         rl.PlaySound(sounds["shot.wav"])
 
-                        { // aim assist
+                        if state.aim_assist {
                             ideal := linalg.normalize(state.enemy_pos[0] + {0, -70} - player.pos)
                             d := linalg.dot(ideal, left)
                             if 0.8 < d && d < 1 {
@@ -593,6 +621,13 @@ update :: proc "c" () {
 
                         append(&state.bullet_pos, bullet_pos)
                         append(&state.bullet_pos_old, bullet_pos_old)
+                    }
+
+                    if IsMouseButtonDown(.RIGHT) {
+                        jetblast = true
+                        left := vec_ccw(vec_up(state.beam, player.pos))
+                        // give it a force from the right
+                        player.pos_old += -left * 0.8
                     }
 
                     verlet_integrate(slice.from_ptr(&player.pos, 1), slice.from_ptr(&player.pos_old, 1))
@@ -750,6 +785,14 @@ update :: proc "c" () {
             color = rl.Color{255, 100, 100, 255}
         }
         draw_tex_rot(tank_tex, player.pos, angle + math.π / 2, 1.0, color)
+        if jetblast {
+            DrawTexturePro(jetblast_tex,
+            Rectangle{0, 0, cast(f32) jetblast_tex.width, cast(f32) jetblast_tex.height * (-1 if (int(rl.GetTime() * 10) % 2 < 1) else 1)},
+            Rectangle{player.pos.x, player.pos.y, cast(f32) jetblast_tex.width, cast(f32) jetblast_tex.height},
+            Vector2{cast(f32) tank_tex.width / 2 - 64, cast(f32) tank_tex.height / 2 - 20},
+            (angle + math.π / 2) * (180 / math.π),
+            rl.WHITE)
+        }
         when DEBUG {
             DrawCircleLines(cast(i32)player.pos.x, cast(i32)player.pos.y, PLAYER_RADIUS, PINK)
             DrawCircleLines(cast(i32)player.pos.x, cast(i32)player.pos.y, PLAYER_HURT_RADIUS, GREEN)
@@ -790,7 +833,15 @@ update :: proc "c" () {
                 }
             }
             if all {
-                state.game_state = .Victory
+                small_array.push(&impacts, Impact{
+                    pos = state.enemy_pos[0],
+                    ttl = 0.8,
+                    tex = &boss_death_tex,
+                    frames = 8,
+                })
+                state.game_state = levels[state.level].win_state
+                rl.StopMusicStream(victory_music)
+                rl.PlayMusicStream(victory_music)
                 music = victory_music
                 victory_time = rl.GetTime()
             }
@@ -798,6 +849,12 @@ update :: proc "c" () {
             state.game_state = .Lose
         }
         case .Victory:
+        draw_text_centered("Mission Success\nPress [Space] to continue", 30)
+        if rl.IsKeyReleased(.SPACE) {
+            state.level += 1
+            reset_level(&state)
+        }
+        case .Victory_Final:
         t := rl.GetTime() - victory_time
         if t < 6 {
             draw_text_centered("Mission Success", 70)
