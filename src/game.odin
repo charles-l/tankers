@@ -23,8 +23,8 @@ GameState :: enum {
 
 LevelProcs :: struct {
     init: proc(^State),
-    update: proc(^State),
-    draw: proc(State),
+    update: proc(^State, []EnemyEvent),
+    draw: proc(State, int, rl.Color),
     win_state: GameState,
 }
 
@@ -89,6 +89,8 @@ draw_tex_rot :: proc(tex: rl.Texture, pos: rl.Vector2, angle: f32, flipx: f32 = 
     color)
 }
 
+enemy_event: [dynamic]EnemyEvent
+
 reset_level :: proc(state: ^State) {
     level := state.level
     rl.StopMusicStream(music)
@@ -103,6 +105,7 @@ reset_level :: proc(state: ^State) {
     }
 
     levels[state.level].init(state)
+    resize(&enemy_event, len(state.enemy_pos))
 }
 
 init_boss :: proc(state: ^State) {
@@ -116,8 +119,9 @@ init_boss :: proc(state: ^State) {
     state.enemy_radius[1] = 20
     state.enemy_radius[2] = 20
 
-    state.enemy_damage_mask[1] += {.Bullet}
-    state.enemy_damage_mask[2] += {.Bullet}
+    state.enemy_damage_mask[0] += {.Bullet}
+    state.enemy_damage_mask[1] += {.Hit}
+    state.enemy_damage_mask[2] += {.Hit}
 
     state.enemy_health[0] = 100
     state.enemy_health[1] = 20
@@ -125,12 +129,20 @@ init_boss :: proc(state: ^State) {
     state.boss_state_time = 2
 }
 
-update_boss :: proc(state: ^State) {
+update_boss :: proc(state: ^State, events: []EnemyEvent) {
     state.boss_state_time -= rl.GetFrameTime()
     player, alive := state.player.(PlayerAlive)
 
     if state.enemy_health[1] <= 0 && state.enemy_health[2] <= 0 {
         state.enemy_damage_mask[0] += {.Hit}
+    }
+
+    for e in events {
+        if e == .Damage {
+            state.boss_state = .Guard
+            state.boss_state_time = 2
+            break
+        }
     }
 
     if !alive {
@@ -169,53 +181,38 @@ update_boss :: proc(state: ^State) {
     update_hand(state.enemy_pos[0], rl.Vector2{1, 1.9}, &state.enemy_pos[2], state.boss_state)
 }
 
-draw_boss :: proc(state: State) {
-    for enemy_pos, i in state.enemy_pos {
-        if state.enemy_radius[i] == 0 {
-            continue
+draw_boss :: proc(state: State, i: int, color: rl.Color) {
+    enemy_pos := state.enemy_pos[i]
+    if i == 0 {
+        switch state.boss_state {
+            case .Idle:
+            draw_tex(boss_face[0], enemy_pos, color)
+            case .Guard:
+            draw_tex(boss_face[2], enemy_pos, color)
+            case .Spinning:
+            draw_tex(boss_face[1], enemy_pos, color)
+            case .Chase:
+            draw_tex(boss_face[3], enemy_pos, color)
         }
-        color := rl.WHITE
-        if state.enemy_last_damage_time[i] != 0 && cast(f32) rl.GetTime() - state.enemy_last_damage_time[i] < 1 {
-            if (int(rl.GetTime() * 10) % 2) < 1 {
-                color = rl.RED
-            }
+    }
+    if i == 1 {
+        switch state.boss_state {
+            case .Idle:
+            draw_tex(hand_l_tex[1], enemy_pos, color)
+            case .Guard:
+            draw_tex_rot(hand_r_tex[1], enemy_pos, math.π / 2 + 0.5, -1, color)
+            case .Spinning, .Chase:
+            draw_tex(hand_l_tex[0], enemy_pos, color)
         }
-        if i == 0 {
-            switch state.boss_state {
-                case .Idle:
-                draw_tex(boss_face[0], enemy_pos, color)
-                case .Guard:
-                draw_tex(boss_face[2], enemy_pos, color)
-                case .Spinning:
-                draw_tex(boss_face[1], enemy_pos, color)
-                case .Chase:
-                draw_tex(boss_face[3], enemy_pos, color)
-            }
-        }
-        if i == 1 {
-            switch state.boss_state {
-                case .Idle:
-                draw_tex(hand_l_tex[1], enemy_pos, color)
-                case .Guard:
-                draw_tex_rot(hand_r_tex[1], enemy_pos, math.π / 2 + 0.5, -1, color)
-                case .Spinning, .Chase:
-                draw_tex(hand_l_tex[0], enemy_pos, color)
-            }
-        }
-        if i == 2 {
-            switch state.boss_state {
-                case .Idle:
-                draw_tex(hand_r_tex[1], enemy_pos, color)
-                case .Guard:
-                draw_tex_rot(hand_l_tex[1], enemy_pos, math.π / 2 + 0.5, -1, color)
-                case .Spinning, .Chase:
-                draw_tex(hand_r_tex[0], enemy_pos, color)
-            }
-        }
-        if state.enemy_radius[i] > 0 {
-            when DEBUG {
-                rl.DrawCircleLines(cast(i32) enemy_pos.x, cast(i32) enemy_pos.y, state.enemy_radius[i], rl.RED)
-            }
+    }
+    if i == 2 {
+        switch state.boss_state {
+            case .Idle:
+            draw_tex(hand_r_tex[1], enemy_pos, color)
+            case .Guard:
+            draw_tex_rot(hand_l_tex[1], enemy_pos, math.π / 2 + 0.5, -1, color)
+            case .Spinning, .Chase:
+            draw_tex(hand_r_tex[0], enemy_pos, color)
         }
     }
 }
@@ -232,7 +229,7 @@ init_level1 :: proc(state: ^State) {
     }
 }
 
-update_level1 :: proc(state: ^State) {
+update_level1 :: proc(state: ^State, events: []EnemyEvent) {
     for pos, i in state.enemy_pos {
         if state.enemy_radius[i] <= 0 {
             continue
@@ -246,7 +243,6 @@ update_level1 :: proc(state: ^State) {
                 target = {100, player.pos.y + 10}
             }
         }
-
 
         alignmentv := rl.Vector2{}
         separationv := rl.Vector2{}
@@ -287,13 +283,52 @@ update_level1 :: proc(state: ^State) {
     }
 }
 
-draw_level1 :: proc(state: State) {
-    for pos, i in state.enemy_pos {
-        if state.enemy_radius[i] > 0 {
-            draw_tex(enemy_tex, pos)
+draw_level1 :: proc(state: State, i: int, color: rl.Color) {
+    draw_tex(enemy_tex, state.enemy_pos[i], color)
+}
+
+EnemyEvent :: enum {
+    None,
+    Damage,
+    Died,
+}
+apply_bullet_damage :: proc(
+    bullet_pos: ^[dynamic]rl.Vector2,
+    bullet_pos_old: ^[dynamic]rl.Vector2,
+    enemy_poss: []rl.Vector2,
+    enemy_radius: []f32,
+    enemy_damage_mask: []bit_set[DamageMask],
+    enemy_health: []f32,
+    enemy_event: []EnemyEvent, // out
+) {
+    for i := 0; i < len(bullet_pos); {
+        for enemy_pos, j in enemy_poss {
+            if rl.CheckCollisionCircles(enemy_pos, enemy_radius[j], bullet_pos[i], BULLET_RADIUS) {
+                dir := linalg.normalize(bullet_pos[i] - bullet_pos_old[i])
+                enemy_poss[j] -= dir * 4
+                rl.PlaySound(sounds["dirt_impact.wav"])
+
+                if .Bullet in enemy_damage_mask[j] {
+                    enemy_health[j] -= 10
+                    enemy_event[j] = .Damage
+                }
+
+                small_array.push(&impacts, Impact{
+                    pos = bullet_pos[i],
+                    ttl = 0.2,
+                    tex = &dirt_tex,
+                    frames = 3,
+                })
+
+                bullet_pos[i].y = 10000
+            }
         }
-        when DEBUG {
-            rl.DrawCircleLines(cast(i32) pos.x, cast(i32) pos.y, state.enemy_radius[i], rl.RED)
+        if bullet_pos[i].y > 10000 {
+            ordered_remove(bullet_pos, i)
+            ordered_remove(bullet_pos_old, i)
+            continue
+        } else {
+            i += 1
         }
     }
 }
@@ -439,7 +474,7 @@ Impact :: struct {
     frames: i32,
 }
 
-impacts: small_array.Small_Array(10, Impact)
+impacts: small_array.Small_Array(20, Impact)
 
 update_stunned :: proc(h: ^Stun) -> bool {
     if h.time_left > 0 {
@@ -531,11 +566,6 @@ update_hand :: proc(body, target: rl.Vector2, limb: ^rl.Vector2, bstate: BossSta
     }
 }
 
-damage_enemy :: proc(state: ^State, i: int, damage: f32) {
-    state.enemy_health[i] -= damage
-    state.enemy_last_damage_time[i] = cast(f32) rl.GetTime()
-}
-
 vec_up :: proc(v1: rl.Vector2, v2: rl.Vector2) -> rl.Vector2 {
     return linalg.normalize(v1 - v2)
 }
@@ -573,7 +603,11 @@ update :: proc "c" () {
         WHITE)
     rl.UpdateMusicStream(music)
 
+    // frame vars
     jetblast := false
+    for _, i in enemy_event {
+        enemy_event[i] = .None
+    }
 
     if rl.IsKeyReleased(.LEFT_BRACKET) {
         state.level -= 1
@@ -587,7 +621,22 @@ update :: proc "c" () {
 
     { // logic/physics
         if(!update_stunned(&hitstop)) {
-            levels[state.level].update(&state)
+            verlet_integrate(state.bullet_pos[:], state.bullet_pos_old[:])
+            apply_bullet_damage(
+                &state.bullet_pos,
+                &state.bullet_pos_old,
+                state.enemy_pos[:],
+                state.enemy_radius[:],
+                state.enemy_damage_mask[:],
+                state.enemy_health[:],
+                enemy_event[:],
+            )
+
+            for ev, i in enemy_event {
+                if ev == .Damage {
+                    state.enemy_last_damage_time[i] = cast(f32) rl.GetTime()
+                }
+            }
 
             { // player update
                 state.beam.x += math.clamp(cast(f32)GetMouseX() - state.beam.x, -4, 4)
@@ -640,46 +689,9 @@ update :: proc "c" () {
                 }
             }
 
-            verlet_integrate(state.bullet_pos[:], state.bullet_pos_old[:])
             verlet_integrate(state.enemy_pos[:], state.enemy_pos_old[:], 0.7)
+            levels[state.level].update(&state, enemy_event[:])
 
-            { // update bullets
-                for i := 0; i < len(state.bullet_pos); {
-                    bullet_pos := state.bullet_pos[i]
-                    for enemy_pos, j in state.enemy_pos {
-                        if rl.CheckCollisionCircles(enemy_pos, state.enemy_radius[j], bullet_pos, BULLET_RADIUS) {
-                            dir := linalg.normalize(state.bullet_pos[i] - state.bullet_pos_old[i])
-                            state.enemy_pos[j] -= dir * 4
-                            rl.PlaySound(sounds["dirt_impact.wav"])
-
-                            if .Bullet in state.enemy_damage_mask[j] {
-                                damage_enemy(&state, j, 10)
-                            }
-
-                            small_array.push(&impacts, Impact{
-                                pos = state.bullet_pos[i],
-                                ttl = 0.2,
-                                tex = &dirt_tex,
-                                frames = 3,
-                            })
-
-                            state.bullet_pos[i].y = 10000
-                            state.boss_state = .Guard
-                            state.boss_state_time = 2
-
-                        }
-                    }
-                    if bullet_pos.y > 10000 {
-                        ordered_remove(&state.bullet_pos, i)
-                        ordered_remove(&state.bullet_pos_old, i)
-                        continue
-                    } else {
-                        i += 1
-                    }
-                }
-            }
-
-            // collisions
             for enemy_pos, i in state.enemy_pos {
                 if state.enemy_health[i] <= 0 {
                     state.enemy_radius[i] = 0
@@ -699,13 +711,21 @@ update :: proc "c" () {
                         stun(&hitstop, 0.2)
                         shake_magnitude = 4
 
-                        damage_enemy(&state, i, 10)
+                        state.enemy_health[i] -= 10
+                        enemy_event[i] = .Damage
 
                         small_array.push(&impacts, Impact{
                             pos = enemy_pos + normal * state.enemy_radius[i],
                             ttl = 0.2,
                             tex = &impact_tex,
                             frames = 1,
+                        })
+
+                        small_array.push(&impacts, Impact{
+                            pos = enemy_pos,
+                            ttl = 0.3,
+                            tex = &dirt_tex,
+                            frames = 3,
                         })
                     } else {
                         if linalg.vector_length(v) > 1 {
@@ -803,7 +823,23 @@ update :: proc "c" () {
         rl.DrawCircle(cast(i32)bullet_pos.x, cast(i32)bullet_pos.y, BULLET_RADIUS, BLACK)
     }
 
-    levels[state.level].draw(state)
+
+    for enemy_pos, i in state.enemy_pos {
+        if state.enemy_radius[i] == 0 {
+            continue
+        }
+        color := rl.WHITE
+        if state.enemy_last_damage_time[i] != 0 && cast(f32) rl.GetTime() - state.enemy_last_damage_time[i] < 1 {
+            if (int(rl.GetTime() * 10) % 2) < 1 {
+                color = rl.RED
+            }
+        }
+        levels[state.level].draw(state, i, color)
+
+        when DEBUG {
+            rl.DrawCircleLines(cast(i32) pos.x, cast(i32) pos.y, state.enemy_radius[i], rl.RED)
+        }
+    }
 
     // draw beam
     rl.DrawRectangleRec(Rectangle{x=state.beam.x - 10, y=state.beam.y - 10, width=1000, height=20}, GRAY)
