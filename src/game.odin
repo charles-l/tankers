@@ -391,6 +391,9 @@ init :: proc "c" () {
         sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
     }
 
+    rl.SetSoundVolume(sounds["ratchet_1.wav"], 0.4)
+    rl.SetSoundVolume(sounds["ratchet_2.wav"], 0.4)
+
     songs[0] = rl.LoadMusicStream("resources/tankers-combat.mp3")
     songs[1] = rl.LoadMusicStream("resources/tankers.mp3")
 
@@ -418,6 +421,8 @@ BULLET_RADIUS :: 4
 GRAVITY :: rl.Vector2{0,0.5}
 
 State :: struct {
+    ratchet: int,
+    rotations: int,
     aim_assist: bool,
     level: int,
     player: union{
@@ -580,6 +585,7 @@ victory_time := 0.0
 update :: proc "c" () {
     using rl
     context = runtime.default_context()
+    defer free_all(context.temp_allocator)
     BeginDrawing();
     defer EndDrawing();
     ClearBackground(GRAY);
@@ -674,9 +680,8 @@ update :: proc "c" () {
 
                     if IsMouseButtonDown(.RIGHT) {
                         jetblast = true
-                        left := vec_ccw(vec_up(state.beam, player.pos))
-                        // give it a force from the right
-                        player.pos_old += -left * 0.8
+                        right := -vec_ccw(vec_up(state.beam, player.pos))
+                        player.pos_old += right * 0.8
                     }
 
                     verlet_integrate(slice.from_ptr(&player.pos, 1), slice.from_ptr(&player.pos_old, 1))
@@ -704,6 +709,7 @@ update :: proc "c" () {
                     v := player.pos - player.pos_old
                     normal := linalg.normalize(player.pos - enemy_pos)
                     if linalg.vector_length(v) > 30 && .Hit in state.enemy_damage_mask[i] {
+                        // TODO: Have to charge up invincible mode to smack them
                         // heavy damage
                         if trigger(&hitsfx_limiter) {
                             rl.PlaySound(sounds["impact_heavy.wav"])
@@ -795,8 +801,24 @@ update :: proc "c" () {
     if player, player_alive := state.player.(PlayerAlive); player_alive { // draw player
         DrawLineV(state.beam, player.pos, rl.BLACK)
 
+        old_diff := state.beam - player.pos_old
         diff := state.beam - player.pos
+
+        old_angle := math.atan2(old_diff.y, old_diff.x)
         angle := math.atan2(diff.y, diff.x)
+
+        if diff.x > 0 && old_diff.y < 0 && diff.y > 0 { // cross into upper half
+            state.ratchet = 1
+            rl.PlaySound(sounds["ratchet_1.wav"])
+            // TODO: play sound
+        } else if old_diff.y > 0 && diff.y < 0 { // cross out of upper half
+            if diff.x < 0 && state.ratchet == 1 {
+                rl.PlaySound(sounds["ratchet_2.wav"])
+                state.rotations += 1
+            }
+            state.ratchet = 0
+        }
+
         //DrawRectanglePro(Rectangle{state.player[1].pos.x, state.player[1].pos.y, 10, 40}, rl.Vector2{10, 20}, angle * (180 / math.π), GREEN)
         //turret := state.player[1].pos + up * 10
         //DrawRectanglePro(Rectangle{turret.x, turret.y, 8, 30}, rl.Vector2{10, 25}, angle * (180 / math.π), GREEN)
@@ -861,6 +883,7 @@ update :: proc "c" () {
         case .Gameplay:
         if player, player_alive := state.player.(PlayerAlive); player_alive {
             rl.DrawRectangle(10, 10, cast(i32) player.health * 4, 10, rl.WHITE)
+            rl.DrawText(fmt.ctprintf("Rotations %d", state.rotations), 20, 40, 40, rl.WHITE)
             all := true
             for r in state.enemy_radius {
                 if r != 0 {
