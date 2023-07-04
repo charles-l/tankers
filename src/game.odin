@@ -25,7 +25,6 @@ LevelProcs :: struct {
     init: proc(^State),
     update: proc(^State, []EnemyEvent),
     draw: proc(State, int, rl.Color),
-    win_state: GameState,
 }
 
 // TODO scenarios:
@@ -120,22 +119,16 @@ init_boss :: proc(state: ^State) {
     state.enemy_radius[2] = 20
 
     state.enemy_damage_mask[0] += {.Bullet}
-    state.enemy_damage_mask[1] += {.Hit}
-    state.enemy_damage_mask[2] += {.Hit}
 
     state.enemy_health[0] = 100
-    state.enemy_health[1] = 20
-    state.enemy_health[2] = 20
+    state.enemy_health[1] = 80
+    state.enemy_health[2] = 80
     state.boss_state_time = 2
 }
 
 update_boss :: proc(state: ^State, events: []EnemyEvent) {
     state.boss_state_time -= rl.GetFrameTime()
     player, alive := state.player.(PlayerAlive)
-
-    if state.enemy_health[1] <= 0 && state.enemy_health[2] <= 0 {
-        state.enemy_damage_mask[0] += {.Hit}
-    }
 
     for e in events {
         if e == .Damage {
@@ -164,21 +157,36 @@ update_boss :: proc(state: ^State, events: []EnemyEvent) {
     }
     target := rl.Vector2{40, 400}
     speed: f32 = 1.0
-    #partial switch state.boss_state {
-        case .Idle:
-        target = {math.sin(cast(f32) rl.GetTime() / 2) * 30 + 90, math.sin(cast(f32) rl.GetTime() / 3) * 20 + 400}
-        case .Chase:
-        target = player.pos - {190, 0}
-        speed = 3
-        case .Spinning:
-        target = player.pos - {100, 0}
-        case:
-        // pass
-    }
-    state.enemy_pos[0] += vclamp(target - state.enemy_pos[0], speed)
 
-    update_hand(state.enemy_pos[0], rl.Vector2{1, 1}, &state.enemy_pos[1], state.boss_state)
-    update_hand(state.enemy_pos[0], rl.Vector2{1, 1.9}, &state.enemy_pos[2], state.boss_state)
+    if state.enemy_health[0] > 0 {
+        #partial switch state.boss_state {
+            case .Idle:
+            target = {math.sin(cast(f32) rl.GetTime() / 2) * 30 + 90, math.sin(cast(f32) rl.GetTime() / 3) * 20 + 400}
+            case .Chase:
+            target = player.pos - {190, 0}
+            speed = 3
+            case .Spinning:
+            target = player.pos - {100, 0}
+            case:
+            // pass
+        }
+        state.enemy_pos[0] += vclamp(target - state.enemy_pos[0], speed)
+        update_hand(state.enemy_pos[0], rl.Vector2{1, 1}, &state.enemy_pos[1], state.boss_state)
+        update_hand(state.enemy_pos[0], rl.Vector2{1, 1.9}, &state.enemy_pos[2], state.boss_state)
+    } else if state.game_state != .Victory_Final {
+        state.boss_state = .Idle
+        small_array.push(&impacts, Impact{
+            pos = state.enemy_pos[0],
+            ttl = 0.8,
+            tex = &boss_death_tex,
+            frames = 8,
+        })
+        state.game_state = .Victory_Final
+        rl.StopMusicStream(victory_music)
+        rl.PlayMusicStream(victory_music)
+        music = victory_music
+        victory_time = rl.GetTime()
+    }
 }
 
 draw_boss :: proc(state: State, i: int, color: rl.Color) {
@@ -225,7 +233,7 @@ init_level1 :: proc(state: ^State) {
         state.enemy_health[i] = 10
         state.enemy_radius[i] = 12
         state.enemy_pos[i] = {20, cast(f32)i * 20}
-        state.enemy_damage_mask[i] += {.Bullet, .Hit}
+        state.enemy_damage_mask[i] += {.Bullet}
     }
 }
 
@@ -280,6 +288,21 @@ update_level1 :: proc(state: ^State, events: []EnemyEvent) {
         v := vclamp(vclamp(target - pos, 30) + alignmentv + separationv + vclamp(cohesionv, 5), 2)
 
         state.enemy_pos[i] += v
+    }
+
+    all := true
+    for r in state.enemy_radius {
+        if r != 0 {
+            all = false
+            break
+        }
+    }
+    if all && state.game_state != .Victory {
+        state.game_state = .Victory
+        rl.StopMusicStream(victory_music)
+        rl.PlayMusicStream(victory_music)
+        music = victory_music
+        victory_time = rl.GetTime()
     }
 }
 
@@ -338,13 +361,11 @@ levels := [?]LevelProcs {
         init = init_level1,
         update = update_level1,
         draw = draw_level1,
-        win_state = .Victory,
     },
     {
         init = init_boss,
         update = update_boss,
         draw = draw_boss,
-        win_state = .Victory_Final,
     }
 }
 
@@ -406,6 +427,7 @@ PlayerAlive :: struct {
     pos: rl.Vector2,
     pos_old: rl.Vector2,
     health: f32,
+    power_shield: f32,
 }
 
 PlayerDead :: struct {}
@@ -656,7 +678,7 @@ update :: proc "c" () {
                         rl.PlaySound(sounds["shot.wav"])
 
                         if state.aim_assist {
-                            ideal := linalg.normalize(state.enemy_pos[0] + {0, -70} - player.pos)
+                            ideal := linalg.normalize(state.enemy_pos[0] + {0, -20} - player.pos)
                             d := linalg.dot(ideal, left)
                             if 0.8 < d && d < 1 {
                                 rl.TraceLog(.INFO, "aim assist %f", cast(f64) linalg.dot(ideal, left))
@@ -708,8 +730,7 @@ update :: proc "c" () {
                     ev := enemy_pos - state.enemy_pos_old[i]
                     v := player.pos - player.pos_old
                     normal := linalg.normalize(player.pos - enemy_pos)
-                    if linalg.vector_length(v) > 30 && .Hit in state.enemy_damage_mask[i] {
-                        // TODO: Have to charge up invincible mode to smack them
+                    if linalg.vector_length(v) > 30 && player.power_shield > 0 {
                         // heavy damage
                         if trigger(&hitsfx_limiter) {
                             rl.PlaySound(sounds["impact_heavy.wav"])
@@ -798,7 +819,7 @@ update :: proc "c" () {
     BeginMode2D(camera)
 
     _, ok := state.player.(PlayerAlive)
-    if player, player_alive := state.player.(PlayerAlive); player_alive { // draw player
+    if player, player_alive := &state.player.(PlayerAlive); player_alive { // draw player
         DrawLineV(state.beam, player.pos, rl.BLACK)
 
         old_diff := state.beam - player.pos_old
@@ -818,6 +839,13 @@ update :: proc "c" () {
             }
             state.ratchet = 0
         }
+
+        ROTATION_POWER_FACTOR :: 1
+        if state.rotations == 10 {
+            player.power_shield = cast(f32) state.rotations * ROTATION_POWER_FACTOR
+            state.rotations = 0
+        }
+        player.power_shield = math.max(0, player.power_shield - rl.GetFrameTime())
 
         //DrawRectanglePro(Rectangle{state.player[1].pos.x, state.player[1].pos.y, 10, 40}, rl.Vector2{10, 20}, angle * (180 / math.π), GREEN)
         //turret := state.player[1].pos + up * 10
@@ -883,26 +911,11 @@ update :: proc "c" () {
         case .Gameplay:
         if player, player_alive := state.player.(PlayerAlive); player_alive {
             rl.DrawRectangle(10, 10, cast(i32) player.health * 4, 10, rl.WHITE)
-            rl.DrawText(fmt.ctprintf("Rotations %d", state.rotations), 20, 40, 40, rl.WHITE)
-            all := true
-            for r in state.enemy_radius {
-                if r != 0 {
-                    all = false
-                    break
-                }
-            }
-            if all {
-                small_array.push(&impacts, Impact{
-                    pos = state.enemy_pos[0],
-                    ttl = 0.8,
-                    tex = &boss_death_tex,
-                    frames = 8,
-                })
-                state.game_state = levels[state.level].win_state
-                rl.StopMusicStream(victory_music)
-                rl.PlayMusicStream(victory_music)
-                music = victory_music
-                victory_time = rl.GetTime()
+            BAR_SCALE_FACTOR :: 4
+            if player.power_shield == 0 {
+                rl.DrawRectangle(10, 30, cast(i32) state.rotations * BAR_SCALE_FACTOR, 10, rl.GRAY)
+            } else {
+                rl.DrawRectangle(10, 30, cast(i32) (player.power_shield * BAR_SCALE_FACTOR), 10, rl.GREEN)
             }
         } else {
             state.game_state = .Lose
