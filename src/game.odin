@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:math"
 import "core:math/linalg"
+import "core:math/rand"
 import "core:math/noise"
 import "core:encoding/json"
 import "core:slice"
@@ -27,6 +28,12 @@ LevelProcs :: struct {
     draw: proc(State, int, rl.Color),
 }
 
+EnemyEvent :: enum {
+    None,
+    Damage,
+    Died,
+}
+
 // TODO scenarios:
 // tank vs small enemies, lead up to miniboss?
 
@@ -35,6 +42,7 @@ _fltused: c.int = 0
 
 impact_tex: rl.Texture
 tank_tex: rl.Texture
+tank_hammer_tex: rl.Texture
 sounds: map[string]rl.Sound
 songs: [2]rl.Music
 music: rl.Music
@@ -48,11 +56,124 @@ dirt_tex: rl.Texture
 explosion_tex: rl.Texture
 boss_death_tex: rl.Texture
 flash_tex: rl.Texture
+general_tex: rl.Texture
 bg: [3]rl.Texture
 
 state: State
 
+// reset every frame
+enemy_event: [dynamic]EnemyEvent
+
 DEBUG :: false
+
+levels := [?]LevelProcs {
+    {
+        init = init_level1,
+        update = update_level1,
+        draw = draw_level1,
+    },
+    {
+        init = init_boss,
+        update = update_boss,
+        draw = draw_boss,
+    }
+}
+
+PlayerAlive :: struct {
+    pos: rl.Vector2,
+    pos_old: rl.Vector2,
+    health: f32,
+    power_shield: f32,
+}
+
+PlayerDead :: struct {}
+
+DamageMask :: enum {
+    Bullet,
+    Hit,
+}
+
+PLAYER_RADIUS :: 32
+PLAYER_HURT_RADIUS :: PLAYER_RADIUS * 0.55
+BULLET_RADIUS :: 4
+camera := rl.Camera2D{
+    offset = rl.Vector2{400, 300},
+    target = rl.Vector2{400, 300},
+    zoom = 1,
+}
+
+shake_magnitude := cast(f32) 0.0
+
+BossState :: enum {
+    Idle,
+    Chase,
+    Guard,
+    Spinning,
+}
+
+
+State :: struct {
+    ratchet: int,
+    rotations: int,
+    aim_assist: bool,
+    level: int,
+    player: union{
+        PlayerAlive,
+        PlayerDead,
+    },
+
+    game_state: GameState,
+
+    bullet_pos: [dynamic]rl.Vector2,
+    bullet_pos_old: [dynamic]rl.Vector2,
+
+    beam: rl.Vector2,
+
+    enemy_pos: [40]rl.Vector2,
+    enemy_pos_old: [40]rl.Vector2,
+    enemy_radius: [40]f32,
+    enemy_health: [40]f32,
+    enemy_damage_mask: [40]bit_set[DamageMask],
+    enemy_last_damage_time: [40]f32,
+
+    boss_state_time: f32,
+    boss_state: BossState,
+}
+
+Stun :: struct {
+    time_left: f32,
+    cooldown: f32,
+}
+
+Limiter :: struct {
+    last_time: f32,
+    cooldown: f32,
+}
+
+hitstop := Stun {
+    cooldown = 0.4,
+}
+
+hitsfx_limiter := Limiter {
+    cooldown = 0.2
+}
+
+damage_limiter := Limiter {
+    cooldown = 0.4
+}
+
+Impact :: struct {
+    pos: rl.Vector2,
+    time: f32,
+    ttl: f32,
+
+    tex: ^rl.Texture,
+    frames: i32,
+}
+
+impacts: small_array.Small_Array(20, Impact)
+
+victory_time := 0.0
 
 dist :: proc(a, b: rl.Vector2) -> f32 {
     return linalg.vector_length(a - b)
@@ -87,8 +208,6 @@ draw_tex_rot :: proc(tex: rl.Texture, pos: rl.Vector2, angle: f32, flipx: f32 = 
     angle * (180 / math.π),
     color)
 }
-
-enemy_event: [dynamic]EnemyEvent
 
 reset_level :: proc(state: ^State) {
     level := state.level
@@ -171,8 +290,8 @@ update_boss :: proc(state: ^State, events: []EnemyEvent) {
             // pass
         }
         state.enemy_pos[0] += vclamp(target - state.enemy_pos[0], speed)
-        update_hand(state.enemy_pos[0], rl.Vector2{1, 1}, &state.enemy_pos[1], state.boss_state)
-        update_hand(state.enemy_pos[0], rl.Vector2{1, 1.9}, &state.enemy_pos[2], state.boss_state)
+        update_hand(state.enemy_pos[0], rl.Vector2{1, 1.2}, &state.enemy_pos[1], state.boss_state)
+        update_hand(state.enemy_pos[0], rl.Vector2{1, 2.5}, &state.enemy_pos[2], state.boss_state)
     } else if state.game_state != .Victory_Final {
         state.boss_state = .Idle
         small_array.push(&impacts, Impact{
@@ -232,7 +351,9 @@ init_level1 :: proc(state: ^State) {
     for i in 0..<40 {
         state.enemy_health[i] = 10
         state.enemy_radius[i] = 12
-        state.enemy_pos[i] = {20, cast(f32)i * 20}
+        x := rand.float32() * 40
+        y := rand.float32() * 400
+        state.enemy_pos[i] = {x - 40, y}
         state.enemy_damage_mask[i] += {.Bullet}
     }
 }
@@ -310,11 +431,6 @@ draw_level1 :: proc(state: State, i: int, color: rl.Color) {
     draw_tex(enemy_tex, state.enemy_pos[i], color)
 }
 
-EnemyEvent :: enum {
-    None,
-    Damage,
-    Died,
-}
 apply_bullet_damage :: proc(
     bullet_pos: ^[dynamic]rl.Vector2,
     bullet_pos_old: ^[dynamic]rl.Vector2,
@@ -356,20 +472,6 @@ apply_bullet_damage :: proc(
     }
 }
 
-levels := [?]LevelProcs {
-    {
-        init = init_level1,
-        update = update_level1,
-        draw = draw_level1,
-    },
-    {
-        init = init_boss,
-        update = update_boss,
-        draw = draw_boss,
-    }
-}
-
-
 @export
 init :: proc "c" () {
     rl.InitWindow(800, 600, "TANKERS")
@@ -395,6 +497,7 @@ init :: proc "c" () {
     flash_tex = rl.LoadTexture("resources/muzzleflash.png")
     dirt_tex = rl.LoadTexture("resources/dirtimpact.png")
     explosion_tex = rl.LoadTexture("resources/explosion.png")
+    general_tex = rl.LoadTexture("resources/general.png")
     boss_death_tex = rl.LoadTexture("resources/boss-death.png")
     // TODO: parallax
     // TODO: birds
@@ -407,6 +510,7 @@ init :: proc "c" () {
     sounds = make(map[string]rl.Sound)
     impact_tex = rl.LoadTexture("resources/impact.png")
     tank_tex = rl.LoadTexture("resources/tank.png")
+    tank_hammer_tex = rl.LoadTexture("resources/tank-hammer.png")
     files, err := filepath.glob("resources/*.wav")
     for soundpath in files {
         sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
@@ -422,86 +526,6 @@ init :: proc "c" () {
 
     reset_level(&state)
 }
-
-PlayerAlive :: struct {
-    pos: rl.Vector2,
-    pos_old: rl.Vector2,
-    health: f32,
-    power_shield: f32,
-}
-
-PlayerDead :: struct {}
-
-DamageMask :: enum {
-    Bullet,
-    Hit,
-}
-
-PLAYER_RADIUS :: 32
-PLAYER_HURT_RADIUS :: PLAYER_RADIUS * 0.55
-BULLET_RADIUS :: 4
-GRAVITY :: rl.Vector2{0,0.5}
-
-State :: struct {
-    ratchet: int,
-    rotations: int,
-    aim_assist: bool,
-    level: int,
-    player: union{
-        PlayerAlive,
-        PlayerDead,
-    },
-
-    game_state: GameState,
-
-    bullet_pos: [dynamic]rl.Vector2,
-    bullet_pos_old: [dynamic]rl.Vector2,
-
-    beam: rl.Vector2,
-
-    enemy_pos: [40]rl.Vector2,
-    enemy_pos_old: [40]rl.Vector2,
-    enemy_radius: [40]f32,
-    enemy_health: [40]f32,
-    enemy_damage_mask: [40]bit_set[DamageMask],
-    enemy_last_damage_time: [40]f32,
-
-    boss_state_time: f32,
-    boss_state: BossState,
-}
-
-Stun :: struct {
-    time_left: f32,
-    cooldown: f32,
-}
-
-Limiter :: struct {
-    last_time: f32,
-    cooldown: f32,
-}
-
-hitstop := Stun {
-    cooldown = 0.4,
-}
-
-hitsfx_limiter := Limiter {
-    cooldown = 0.2
-}
-
-damage_limiter := Limiter {
-    cooldown = 0.4
-}
-
-Impact :: struct {
-    pos: rl.Vector2,
-    time: f32,
-    ttl: f32,
-
-    tex: ^rl.Texture,
-    frames: i32,
-}
-
-impacts: small_array.Small_Array(20, Impact)
 
 update_stunned :: proc(h: ^Stun) -> bool {
     if h.time_left > 0 {
@@ -546,12 +570,12 @@ verlet_integrate :: proc(pos: []rl.Vector2, old_pos: []rl.Vector2, damping: f32 
     assert(len(pos) == len(old_pos))
     for i := 0; i < len(pos); i+=1 {
         tmp := pos[i]
+        GRAVITY :: rl.Vector2{0,0.5}
         pos[i] += ((pos[i] - old_pos[i]) + GRAVITY) * damping
         old_pos[i] = tmp
     }
 }
 
-PLAYER_MAX_DIST :: 200.0
 verlet_solve_constraints :: proc(root: rl.Vector2, child: ^rl.Vector2, dist: f32) {
     using linalg
 
@@ -560,21 +584,6 @@ verlet_solve_constraints :: proc(root: rl.Vector2, child: ^rl.Vector2, dist: f32
     if diff_len > dist {
         child^ = root + (diff / diff_len) * dist
     }
-}
-
-camera := rl.Camera2D{
-    offset = rl.Vector2{400, 300},
-    target = rl.Vector2{400, 300},
-    zoom = 1,
-}
-
-shake_magnitude := cast(f32) 0.0
-
-BossState :: enum {
-    Idle,
-    Chase,
-    Guard,
-    Spinning,
 }
 
 update_hand :: proc(body, target: rl.Vector2, limb: ^rl.Vector2, bstate: BossState) {
@@ -600,8 +609,6 @@ vec_up :: proc(v1: rl.Vector2, v2: rl.Vector2) -> rl.Vector2 {
 vec_ccw :: proc(v: rl.Vector2) -> rl.Vector2 {
     return rl.Vector2{v.y, -v.x}
 }
-
-victory_time := 0.0
 
 @export
 update :: proc "c" () {
@@ -637,14 +644,16 @@ update :: proc "c" () {
         enemy_event[i] = .None
     }
 
-    if rl.IsKeyReleased(.LEFT_BRACKET) {
-        state.level -= 1
-        reset_level(&state)
-    }
+    when DEBUG {
+        if rl.IsKeyReleased(.LEFT_BRACKET) {
+            state.level -= 1
+            reset_level(&state)
+        }
 
-    if rl.IsKeyReleased(.RIGHT_BRACKET) {
-        state.level += 1
-        reset_level(&state)
+        if rl.IsKeyReleased(.RIGHT_BRACKET) {
+            state.level += 1
+            reset_level(&state)
+        }
     }
 
     { // logic/physics
@@ -681,7 +690,9 @@ update :: proc "c" () {
                             ideal := linalg.normalize(state.enemy_pos[0] + {0, -20} - player.pos)
                             d := linalg.dot(ideal, left)
                             if 0.8 < d && d < 1 {
-                                rl.TraceLog(.INFO, "aim assist %f", cast(f64) linalg.dot(ideal, left))
+                                when DEBUG {
+                                    rl.TraceLog(.INFO, "aim assist %f", cast(f64) linalg.dot(ideal, left))
+                                }
                                 left = ideal
                             }
                         }
@@ -708,6 +719,7 @@ update :: proc "c" () {
 
                     verlet_integrate(slice.from_ptr(&player.pos, 1), slice.from_ptr(&player.pos_old, 1))
                     for i in 0..<10 {
+                        PLAYER_MAX_DIST :: 200.0
                         verlet_solve_constraints(state.beam, &player.pos, PLAYER_MAX_DIST)
                     }
 
@@ -847,14 +859,22 @@ update :: proc "c" () {
         }
         player.power_shield = math.max(0, player.power_shield - rl.GetFrameTime())
 
-        //DrawRectanglePro(Rectangle{state.player[1].pos.x, state.player[1].pos.y, 10, 40}, rl.Vector2{10, 20}, angle * (180 / math.π), GREEN)
-        //turret := state.player[1].pos + up * 10
-        //DrawRectanglePro(Rectangle{turret.x, turret.y, 8, 30}, rl.Vector2{10, 25}, angle * (180 / math.π), GREEN)
         color := WHITE
         if is_limited(&damage_limiter) && i32(rl.GetTime() * 10) % 2 < 1 {
+            // RED
             color = rl.Color{255, 100, 100, 255}
         }
-        draw_tex_rot(tank_tex, player.pos, angle + math.π / 2, 1.0, color)
+        if player.power_shield > 0 {
+            tex := tank_hammer_tex
+            DrawTexturePro(tex,
+            Rectangle{0, 0, cast(f32) tex.width, cast(f32) tex.height},
+            Rectangle{player.pos.x, player.pos.y, cast(f32) tex.width, cast(f32) tex.height},
+            Vector2{cast(f32) tex.width / 2, cast(f32) tex.height / 2 + 13},
+            (angle + math.π / 2) * (180 / math.π),
+            color)
+        } else {
+            draw_tex_rot(tank_tex, player.pos, angle + math.π / 2, 1.0, color)
+        }
         if jetblast {
             DrawTexturePro(jetblast_tex,
             Rectangle{0, 0, cast(f32) jetblast_tex.width, cast(f32) jetblast_tex.height * (-1 if (int(rl.GetTime() * 10) % 2 < 1) else 1)},
@@ -917,6 +937,29 @@ update :: proc "c" () {
             } else {
                 rl.DrawRectangle(10, 30, cast(i32) (player.power_shield * BAR_SCALE_FACTOR), 10, rl.GREEN)
             }
+
+            // text
+            bg_rec := rl.Rectangle{
+                x = cast(f32) rl.GetScreenWidth() / 2 - 200,
+                y = cast(f32) rl.GetScreenHeight() - 48,
+                width = 400,
+                height = 48,
+            }
+            rl.DrawRectangleRec(bg_rec, rl.LIGHTGRAY)
+
+            GENERAL_FRAMES :: 2
+            frame_width := cast(f32) general_tex.width / GENERAL_FRAMES
+            frame := 1 if ((cast(int) (rl.GetTime() * 1000)) % 2000) < 100 else 0
+
+            portrait_rec := Rectangle{bg_rec.x, bg_rec.y, frame_width, cast(f32) general_tex.height}
+            rl.DrawRectangleRec(portrait_rec, LIGHTGRAY)
+            rl.DrawTexturePro(general_tex,
+            Rectangle{cast(f32) frame_width * cast(f32) frame, 0, cast(f32) frame_width, cast(f32) general_tex.height},
+            portrait_rec,
+            Vector2{0, 0},
+            0,
+            WHITE)
+            rl.DrawText("Now go kill some rocks", cast(i32) bg_rec.x + 48 + 5, cast(i32) bg_rec.y + 5, 10, rl.BLACK)
         } else {
             state.game_state = .Lose
         }
