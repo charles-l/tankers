@@ -40,11 +40,12 @@ EnemyEvent :: enum {
 @export
 _fltused: c.int = 0
 
+target_tex: rl.Texture
 impact_tex: rl.Texture
 tank_tex: rl.Texture
 tank_hammer_tex: rl.Texture
 sounds: map[string]rl.Sound
-songs: [2]rl.Music
+songs: [3]rl.Music
 music: rl.Music
 victory_music: rl.Music
 boss_face: [4]rl.Texture
@@ -64,9 +65,16 @@ state: State
 // reset every frame
 enemy_event: [dynamic]EnemyEvent
 
-DEBUG :: false
+frame_i := 0
+
+DEBUG :: true
 
 levels := [?]LevelProcs {
+    {
+        init = init_tutorial,
+        update = update_tutorial,
+        draw = draw_tutorial,
+    },
     {
         init = init_level1,
         update = update_level1,
@@ -91,6 +99,21 @@ PlayerDead :: struct {}
 DamageMask :: enum {
     Bullet,
     Hit,
+}
+
+fade_to_black :: proc(state: ^State) -> bool {
+    if state.fade < 1 {
+        state.fade = math.min(state.fade + 0.05, 1)
+        return false
+    }
+    return true
+}
+
+next_level :: proc(state: ^State) -> bool {
+    state.level += 1
+    fmt.println("NEXT LEVEL")
+    reset_level(state)
+    return true
 }
 
 PLAYER_RADIUS :: 32
@@ -128,6 +151,7 @@ State :: struct {
     bullet_pos_old: [dynamic]rl.Vector2,
 
     beam: rl.Vector2,
+    disable_beam: bool,
 
     enemy_pos: [40]rl.Vector2,
     enemy_pos_old: [40]rl.Vector2,
@@ -138,6 +162,15 @@ State :: struct {
 
     boss_state_time: f32,
     boss_state: BossState,
+
+    lines: []string,
+    line_i: int,
+    text_i: int,
+
+    fade: f32,
+
+    event_queue: []proc(^State) -> bool,
+    tutorial_flag: int,
 }
 
 Stun :: struct {
@@ -160,6 +193,10 @@ hitsfx_limiter := Limiter {
 
 damage_limiter := Limiter {
     cooldown = 0.4
+}
+
+text_limiter := Limiter {
+    cooldown = 0.05
 }
 
 Impact :: struct {
@@ -209,7 +246,7 @@ draw_tex_rot :: proc(tex: rl.Texture, pos: rl.Vector2, angle: f32, flipx: f32 = 
     color)
 }
 
-reset_level :: proc(state: ^State) {
+reset_level :: proc(state: ^State) -> bool {
     level := state.level
     rl.StopMusicStream(music)
     music = songs[level]
@@ -218,20 +255,29 @@ reset_level :: proc(state: ^State) {
     state^ = State{
         aim_assist = false,
         level = level,
-        player = PlayerAlive{pos={400, 500}, pos_old={400, 500}, health=10},
-        beam = {400, 300},
+        player = PlayerAlive{pos={600, 500}, pos_old={600, 500}, health=30},
+        beam = {600, 300},
     }
+
+    state.lines = {""}
 
     levels[state.level].init(state)
     resize(&enemy_event, len(state.enemy_pos))
+
+    return true
+}
+
+boss_lines := [?]string{
+    "Oh. That's a big one",
 }
 
 init_boss :: proc(state: ^State) {
+    state.lines = boss_lines[:]
     state.aim_assist = true
     music = rl.LoadMusicStream("resources/tankers.mp3")
     rl.PlayMusicStream(music)
 
-    state.enemy_pos[0] = {40, 400}
+    state.enemy_pos[0] = {-40, 400}
     state.enemy_pos_old[0] = state.enemy_pos[0]
     state.enemy_radius[0] = 50
     state.enemy_radius[1] = 20
@@ -239,7 +285,7 @@ init_boss :: proc(state: ^State) {
 
     state.enemy_damage_mask[0] += {.Bullet}
 
-    state.enemy_health[0] = 100
+    state.enemy_health[0] = 400
     state.enemy_health[1] = 80
     state.enemy_health[2] = 80
     state.boss_state_time = 2
@@ -344,6 +390,127 @@ draw_boss :: proc(state: State, i: int, color: rl.Color) {
     }
 }
 
+tutorial_lines_1 := [?]string{
+    "Congratulations soldier, you've been selected to join our\nexperimental TANKERS force. [Left click to advance dialog]",
+    "Some genius in a lab decided replacing ship artillery with\ntanks would simplify manufacturing",
+    "You'll prove out the effectiveness of this\n<cough> terrible <cough> idea.",
+    "Start with some target practice in your TH-0R.\nShoot the targets above you.",
+    "[Left click to fire cannon]",
+}
+
+init_tutorial :: proc(state: ^State) {
+    state.lines = tutorial_lines_1[:]
+    state.disable_beam = true
+    state.enemy_radius[0] = 20
+    state.enemy_radius[1] = 20
+    state.enemy_radius[2] = 20
+    state.enemy_radius[3] = 20
+
+    state.enemy_health[0] = 10
+    state.enemy_health[1] = 10
+    state.enemy_health[2] = 10
+    state.enemy_health[3] = 30
+
+    state.enemy_damage_mask[0] += {.Bullet}
+    state.enemy_damage_mask[1] += {.Bullet}
+    state.enemy_damage_mask[2] += {.Bullet}
+
+    state.enemy_pos[0] = {-40, 0}
+    state.enemy_pos[1] = {-40, 0}
+    state.enemy_pos[2] = {-40, 0}
+    state.enemy_pos[3] = {-40, 0}
+
+}
+
+tutorial_lines_2 := [?]string{
+    "To counteract the force of cannon blasts, your tank has\nbeen equipped with a rocket engine",
+    "[Right click and hold to fire rocket]",
+    "Use it to line up your shots or slow the spin.",
+}
+
+tutorial_lines_3 := [?]string{
+    "To improve mobility further, the crane enables lateral movement.",
+    "[Horizontal mouse movement adjusts the beam position]",
+}
+
+tutorial_lines_4 := [?]string{
+    "Lastly, your tank has been equipped with... <ahem> \"power armor\"\nthat can pulverize your opponents if you gain enough speed.",
+    "Power it by completing a clockwise crank. The\nindicator in the top left will turn green when your armor is enabled.",
+    "Use it to destroy the target that is impervious to bullets.",
+    "Crank it to full power, then start blasting to get enough\nspeed to destroy the target.",
+}
+
+tutorial_lines_5 := [?]string{
+    "Alright, soldier. Your training is complete.\nPrepare for combat.",
+}
+
+update_tutorial :: proc(state: ^State, events: []EnemyEvent) {
+    if state.tutorial_flag == 0 {
+        state.enemy_pos[0] = {400, 30}
+        state.enemy_pos[1] = {400, 80}
+
+        if state.enemy_radius[0] == 0 && state.enemy_radius[1] == 0 {
+            state.lines = tutorial_lines_2[:]
+            state.line_i = 0
+            state.text_i = 0
+            state.tutorial_flag += 1
+        }
+    } else if state.tutorial_flag == 1 {
+        if text_active(state^) {
+            return
+        }
+
+        state.enemy_pos[2] = {200, 200}
+        if state.enemy_radius[2] == 0 {
+            state.lines = tutorial_lines_3[:]
+            state.line_i = 0
+            state.text_i = 0
+            state.tutorial_flag += 1
+            state.boss_state_time = cast(f32) rl.GetTime()
+        }
+    } else if state.tutorial_flag == 2 {
+        if text_active(state^) {
+            return
+        }
+        state.disable_beam = false
+
+        if cast(f32) rl.GetTime() - state.boss_state_time > 10 {
+            state.lines = tutorial_lines_4[:]
+            state.line_i = 0
+            state.text_i = 0
+            state.tutorial_flag += 1
+        }
+    } else if state.tutorial_flag == 3 {
+        state.enemy_pos[3] = {400, 300}
+        if state.enemy_radius[3] == 0 {
+            state.lines = tutorial_lines_5[:]
+            state.line_i = 0
+            state.text_i = 0
+            state.tutorial_flag += 1
+        }
+    } else if state.tutorial_flag == 4 {
+        if text_active(state^) {
+            return
+        }
+        state.event_queue = {fade_to_black, next_level}
+        state.tutorial_flag += 1
+    }
+}
+
+draw_tutorial :: proc(state: State, i: int, color: rl.Color) {
+    c := color
+    if i == 3 {
+        c = rl.PURPLE
+    }
+    draw_tex(target_tex, state.enemy_pos[i], c)
+}
+
+level1_lines := [?]string{
+    "We're being swarmed by unidentified attackers made of rock.",
+    "Probably an idea from another genius in the lab.",
+    "Take them out before they cause problems.",
+}
+
 init_level1 :: proc(state: ^State) {
     music = rl.LoadMusicStream("resources/tankers-combat.mp3")
     rl.PlayMusicStream(music)
@@ -356,6 +523,9 @@ init_level1 :: proc(state: ^State) {
         state.enemy_pos[i] = {x - 40, y}
         state.enemy_damage_mask[i] += {.Bullet}
     }
+
+    state.lines = level1_lines[:]
+    state.boss_state_time = cast(f32) rl.GetTime()
 }
 
 update_level1 :: proc(state: ^State, events: []EnemyEvent) {
@@ -366,7 +536,7 @@ update_level1 :: proc(state: ^State, events: []EnemyEvent) {
 
         target := rl.Vector2{1000, 400}
         if player, player_alive := state.player.(PlayerAlive); player_alive {
-            if (cast(i32) rl.GetTime()) % 10 < 2 {
+            if (cast(i32) rl.GetTime()) % 10 < 2 && cast(f32) rl.GetTime() - state.boss_state_time > 10 {
                 target = player.pos
             } else {
                 target = {100, player.pos.y + 10}
@@ -472,6 +642,10 @@ apply_bullet_damage :: proc(
     }
 }
 
+text_active :: proc(state: State) -> bool {
+    return state.line_i < len(state.lines)
+}
+
 @export
 init :: proc "c" () {
     rl.InitWindow(800, 600, "TANKERS")
@@ -485,6 +659,7 @@ init :: proc "c" () {
     victory_music.looping = false
     rl.PlayMusicStream(victory_music)
 
+    target_tex = rl.LoadTexture("resources/target.png")
     enemy_tex = rl.LoadTexture("resources/enemy.png")
     jetblast_tex = rl.LoadTexture("resources/jetblast.png")
     boss_face = [4]rl.Texture{
@@ -520,7 +695,8 @@ init :: proc "c" () {
     rl.SetSoundVolume(sounds["ratchet_2.wav"], 0.4)
 
     songs[0] = rl.LoadMusicStream("resources/tankers-combat.mp3")
-    songs[1] = rl.LoadMusicStream("resources/tankers.mp3")
+    songs[1] = songs[0]
+    songs[2] = rl.LoadMusicStream("resources/tankers.mp3")
 
     music = songs[0]
 
@@ -647,12 +823,12 @@ update :: proc "c" () {
     when DEBUG {
         if rl.IsKeyReleased(.LEFT_BRACKET) {
             state.level -= 1
-            reset_level(&state)
+            state.event_queue = {fade_to_black, reset_level}
         }
 
         if rl.IsKeyReleased(.RIGHT_BRACKET) {
             state.level += 1
-            reset_level(&state)
+            state.event_queue = {fade_to_black, reset_level}
         }
     }
 
@@ -676,10 +852,13 @@ update :: proc "c" () {
             }
 
             { // player update
-                state.beam.x += math.clamp(cast(f32)GetMouseX() - state.beam.x, -4, 4)
+                if !state.disable_beam {
+                    state.beam.x += math.clamp(cast(f32)GetMouseX() - state.beam.x, -4, 4)
+                    state.beam.x = clamp(state.beam.x, 400, 800)
+                }
                 switch player in &state.player {
                     case PlayerAlive:
-                    if IsMouseButtonReleased(.LEFT) {
+                    if !text_active(state) && IsMouseButtonReleased(.LEFT) {
                         left := vec_ccw(vec_up(state.beam, player.pos))
                         // give it a force from the right
                         player.pos_old += left * 40
@@ -856,6 +1035,15 @@ update :: proc "c" () {
         if state.rotations == 10 {
             player.power_shield = cast(f32) state.rotations * ROTATION_POWER_FACTOR
             state.rotations = 0
+            stun(&hitstop, 0.4)
+            shake_magnitude = 4
+
+            small_array.push(&impacts, Impact{
+                pos = player.pos,
+                ttl = 0.2,
+                tex = &dirt_tex,
+                frames = 3,
+            })
         }
         player.power_shield = math.max(0, player.power_shield - rl.GetFrameTime())
 
@@ -907,7 +1095,7 @@ update :: proc "c" () {
         levels[state.level].draw(state, i, color)
 
         when DEBUG {
-            rl.DrawCircleLines(cast(i32) pos.x, cast(i32) pos.y, state.enemy_radius[i], rl.RED)
+            rl.DrawCircleLines(cast(i32) enemy_pos.x, cast(i32) enemy_pos.y, state.enemy_radius[i], rl.RED)
         }
     }
 
@@ -938,36 +1126,51 @@ update :: proc "c" () {
                 rl.DrawRectangle(10, 30, cast(i32) (player.power_shield * BAR_SCALE_FACTOR), 10, rl.GREEN)
             }
 
-            // text
-            bg_rec := rl.Rectangle{
-                x = cast(f32) rl.GetScreenWidth() / 2 - 200,
-                y = cast(f32) rl.GetScreenHeight() - 48,
-                width = 400,
-                height = 48,
+            if text_active(state) {
+                // textbox
+                bg_rec := rl.Rectangle{
+                    x = cast(f32) rl.GetScreenWidth() / 2 - 200,
+                    y = cast(f32) rl.GetScreenHeight() - 48,
+                    width = 400,
+                    height = 48,
+                }
+                rl.DrawRectangleRec(bg_rec, rl.LIGHTGRAY)
+
+                GENERAL_FRAMES :: 2
+                frame_width := cast(f32) general_tex.width / GENERAL_FRAMES
+                frame := 1 if ((cast(int) (rl.GetTime() * 1000)) % 2000) < 100 else 0
+
+                portrait_rec := Rectangle{bg_rec.x, bg_rec.y, frame_width, cast(f32) general_tex.height}
+                rl.DrawRectangleRec(portrait_rec, LIGHTGRAY)
+                rl.DrawTexturePro(general_tex,
+                Rectangle{cast(f32) frame_width * cast(f32) frame, 0, cast(f32) frame_width, cast(f32) general_tex.height},
+                portrait_rec,
+                Vector2{0, 0},
+                0,
+                WHITE)
+                rl.DrawText(strings.clone_to_cstring(state.lines[state.line_i][:state.text_i], context.temp_allocator), cast(i32) bg_rec.x + 48 + 5, cast(i32) bg_rec.y + 5, 10, rl.BLACK)
+
+                if state.text_i < len(state.lines[state.line_i]) {
+                    if trigger(&text_limiter) {
+                        state.text_i += 1
+                    }
+                    if rl.IsMouseButtonReleased(.LEFT) {
+                        state.text_i = len(state.lines[state.line_i])
+                    }
+                } else {
+                    if rl.IsMouseButtonReleased(.LEFT) {
+                        state.line_i += 1
+                        state.text_i = 0
+                    }
+                }
             }
-            rl.DrawRectangleRec(bg_rec, rl.LIGHTGRAY)
-
-            GENERAL_FRAMES :: 2
-            frame_width := cast(f32) general_tex.width / GENERAL_FRAMES
-            frame := 1 if ((cast(int) (rl.GetTime() * 1000)) % 2000) < 100 else 0
-
-            portrait_rec := Rectangle{bg_rec.x, bg_rec.y, frame_width, cast(f32) general_tex.height}
-            rl.DrawRectangleRec(portrait_rec, LIGHTGRAY)
-            rl.DrawTexturePro(general_tex,
-            Rectangle{cast(f32) frame_width * cast(f32) frame, 0, cast(f32) frame_width, cast(f32) general_tex.height},
-            portrait_rec,
-            Vector2{0, 0},
-            0,
-            WHITE)
-            rl.DrawText("Now go kill some rocks", cast(i32) bg_rec.x + 48 + 5, cast(i32) bg_rec.y + 5, 10, rl.BLACK)
         } else {
             state.game_state = .Lose
         }
         case .Victory:
         draw_text_centered("Mission Success\nPress [Space] to continue", 30)
         if rl.IsKeyReleased(.SPACE) {
-            state.level += 1
-            reset_level(&state)
+            state.event_queue = {fade_to_black, next_level}
         }
         case .Victory_Final:
         t := rl.GetTime() - victory_time
@@ -981,7 +1184,19 @@ update :: proc "c" () {
         case .Lose:
         draw_text_centered("Mission Failed\nHit [R] to restart", 70)
         if rl.IsKeyReleased(.R) {
-            reset_level(&state)
+            state.event_queue = {fade_to_black, reset_level}
+        }
+    }
+    frame_i += 1
+    rl.DrawRectangle(0, 0, rl.GetScreenWidth(), rl.GetScreenHeight(), rl.Fade(rl.BLACK, state.fade))
+
+    if len(state.event_queue) > 0 {
+        done := state.event_queue[0](&state)
+        fmt.println(done, state.event_queue)
+        if done && len(state.event_queue) > 0 {
+            fmt.println("POP")
+            state.event_queue = state.event_queue[1:]
+            fmt.println(state.event_queue)
         }
     }
 }
