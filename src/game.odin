@@ -61,6 +61,7 @@ flash_tex: rl.Texture
 general_tex: rl.Texture
 bg: [3]rl.Texture
 renderbuf: rl.RenderTexture2D
+font: rl.Font
 
 state: State
 
@@ -797,6 +798,8 @@ vec_ccw :: proc(v: rl.Vector2) -> rl.Vector2 {
     return rl.Vector2{v.y, -v.x}
 }
 
+scale := 1
+
 @export
 update :: proc "c" () {
     using rl
@@ -863,7 +866,7 @@ update :: proc "c" () {
 
             { // player update
                 if !state.disable_beam {
-                    state.beam.x += math.clamp(cast(f32)GetMouseX() - state.beam.x, -4, 4)
+                    state.beam.x += math.clamp((cast(f32) GetMouseX() / cast(f32) scale) - state.beam.x, -4, 4)
                     state.beam.x = clamp(state.beam.x, 400, 800)
                 }
                 switch player in &state.player {
@@ -1212,8 +1215,10 @@ update :: proc "c" () {
     EndTextureMode();
 
     if IsKeyReleased(.ONE) {
+        scale = 1
         SetWindowSize(800, 600)
     } else if IsKeyReleased(.TWO) {
+        scale = 2
         SetWindowSize(800*2, 600*2)
     }
 
