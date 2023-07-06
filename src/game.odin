@@ -42,6 +42,7 @@ _fltused: c.int = 0
 
 target_tex: rl.Texture
 impact_tex: rl.Texture
+powershield_impact: rl.Texture
 tank_tex: rl.Texture
 tank_hammer_tex: rl.Texture
 sounds: map[string]rl.Sound
@@ -59,6 +60,7 @@ boss_death_tex: rl.Texture
 flash_tex: rl.Texture
 general_tex: rl.Texture
 bg: [3]rl.Texture
+renderbuf: rl.RenderTexture2D
 
 state: State
 
@@ -111,7 +113,6 @@ fade_to_black :: proc(state: ^State) -> bool {
 
 next_level :: proc(state: ^State) -> bool {
     state.level += 1
-    fmt.println("NEXT LEVEL")
     reset_level(state)
     return true
 }
@@ -248,9 +249,13 @@ draw_tex_rot :: proc(tex: rl.Texture, pos: rl.Vector2, angle: f32, flipx: f32 = 
 
 reset_level :: proc(state: ^State) -> bool {
     level := state.level
-    rl.StopMusicStream(music)
-    music = songs[level]
-    rl.PlayMusicStream(music)
+    if music.ctxData != songs[level].ctxData {
+        rl.StopMusicStream(music)
+        music = songs[level]
+    }
+    if !rl.IsAudioStreamPlaying(music) {
+        rl.PlayMusicStream(music)
+    }
 
     state^ = State{
         aim_assist = false,
@@ -269,12 +274,14 @@ reset_level :: proc(state: ^State) -> bool {
 
 boss_lines := [?]string{
     "Oh. That's a big one",
+    "Use your power armor to break his skull.",
 }
+
+BOSS_HEALTH :: 400
 
 init_boss :: proc(state: ^State) {
     state.lines = boss_lines[:]
     state.aim_assist = true
-    music = rl.LoadMusicStream("resources/tankers.mp3")
     rl.PlayMusicStream(music)
 
     state.enemy_pos[0] = {-40, 400}
@@ -285,7 +292,7 @@ init_boss :: proc(state: ^State) {
 
     state.enemy_damage_mask[0] += {.Bullet}
 
-    state.enemy_health[0] = 400
+    state.enemy_health[0] = BOSS_HEALTH
     state.enemy_health[1] = 80
     state.enemy_health[2] = 80
     state.boss_state_time = 2
@@ -357,6 +364,8 @@ update_boss :: proc(state: ^State, events: []EnemyEvent) {
 draw_boss :: proc(state: State, i: int, color: rl.Color) {
     enemy_pos := state.enemy_pos[i]
     if i == 0 {
+        rl.DrawRectangleV(enemy_pos + {-45, -70}, {BOSS_HEALTH / 5, 5}, rl.LIGHTGRAY)
+        rl.DrawRectangleV(enemy_pos + {-45, -70}, {state.enemy_health[0]/ 5, 5}, rl.RED)
         switch state.boss_state {
             case .Idle:
             draw_tex(boss_face[0], enemy_pos, color)
@@ -512,7 +521,6 @@ level1_lines := [?]string{
 }
 
 init_level1 :: proc(state: ^State) {
-    music = rl.LoadMusicStream("resources/tankers-combat.mp3")
     rl.PlayMusicStream(music)
 
     for i in 0..<40 {
@@ -659,6 +667,8 @@ init :: proc "c" () {
     victory_music.looping = false
     rl.PlayMusicStream(victory_music)
 
+    renderbuf = rl.LoadRenderTexture(800, 600)
+
     target_tex = rl.LoadTexture("resources/target.png")
     enemy_tex = rl.LoadTexture("resources/enemy.png")
     jetblast_tex = rl.LoadTexture("resources/jetblast.png")
@@ -684,6 +694,7 @@ init :: proc "c" () {
 
     sounds = make(map[string]rl.Sound)
     impact_tex = rl.LoadTexture("resources/impact.png")
+    powershield_impact = rl.LoadTexture("resources/powersheild-impact.png")
     tank_tex = rl.LoadTexture("resources/tank.png")
     tank_hammer_tex = rl.LoadTexture("resources/tank-hammer.png")
     files, err := filepath.glob("resources/*.wav")
@@ -791,8 +802,7 @@ update :: proc "c" () {
     using rl
     context = runtime.default_context()
     defer free_all(context.temp_allocator)
-    BeginDrawing();
-    defer EndDrawing();
+    BeginTextureMode(renderbuf);
     ClearBackground(GRAY);
     rl.DrawTexturePro(bg[0],
         rl.Rectangle{cast(f32) -rl.GetTime() * 8, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
@@ -865,7 +875,7 @@ update :: proc "c" () {
 
                         rl.PlaySound(sounds["shot.wav"])
 
-                        if state.aim_assist {
+                        if state.aim_assist && player.power_shield == 0 {
                             ideal := linalg.normalize(state.enemy_pos[0] + {0, -20} - player.pos)
                             d := linalg.dot(ideal, left)
                             if 0.8 < d && d < 1 {
@@ -1038,11 +1048,13 @@ update :: proc "c" () {
             stun(&hitstop, 0.4)
             shake_magnitude = 4
 
+            rl.PlaySound(sounds["armor_powerup.wav"])
+
             small_array.push(&impacts, Impact{
                 pos = player.pos,
-                ttl = 0.2,
-                tex = &dirt_tex,
-                frames = 3,
+                ttl = 0.5,
+                tex = &powershield_impact,
+                frames = 5,
             })
         }
         player.power_shield = math.max(0, player.power_shield - rl.GetFrameTime())
@@ -1192,12 +1204,26 @@ update :: proc "c" () {
 
     if len(state.event_queue) > 0 {
         done := state.event_queue[0](&state)
-        fmt.println(done, state.event_queue)
         if done && len(state.event_queue) > 0 {
-            fmt.println("POP")
             state.event_queue = state.event_queue[1:]
-            fmt.println(state.event_queue)
         }
     }
+
+    EndTextureMode();
+
+    if IsKeyReleased(.ONE) {
+        SetWindowSize(800, 600)
+    } else if IsKeyReleased(.TWO) {
+        SetWindowSize(800*2, 600*2)
+    }
+
+    BeginDrawing()
+    DrawTexturePro(renderbuf.texture,
+    Rectangle{0, 0, 800, -600},
+    Rectangle{0, 0, cast(f32) GetScreenWidth(), cast(f32) GetScreenHeight()},
+    {0, 0},
+    0,
+    rl.WHITE)
+    EndDrawing()
 }
 
