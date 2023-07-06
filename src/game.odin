@@ -69,7 +69,7 @@ enemy_event: [dynamic]EnemyEvent
 
 frame_i := 0
 
-DEBUG :: true
+DEBUG :: false
 
 levels := [?]LevelProcs {
     {
