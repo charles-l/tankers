@@ -36,13 +36,18 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
-    libraylib.addCSourceFile("raylib/src/rcore.c", &.{"-fno-sanitize=undefined"});
-    libraylib.addCSourceFile("raylib/src/rshapes.c", &.{"-fno-sanitize=undefined"});
-    libraylib.addCSourceFile("raylib/src/rtextures.c", &.{"-fno-sanitize=undefined"});
-    libraylib.addCSourceFile("raylib/src/rtext.c", &.{"-fno-sanitize=undefined"});
-    libraylib.addCSourceFile("raylib/src/rmodels.c", &.{"-fno-sanitize=undefined"});
-    libraylib.addCSourceFile("raylib/src/utils.c", &.{"-fno-sanitize=undefined"});
-    libraylib.addCSourceFile("raylib/src/raudio.c", &.{"-fno-sanitize=undefined"});
+    const flags: []const []const u8 = if (is_web_target)
+        &.{ "-fno-sanitize=undefined", "-DPLATFORM_WEB=1", "-DGRAPHICS_API_OPENGL_ES2=1", "-D__EMSCRIPTEN__", "-fno-strict-aliasing" }
+    else
+        &.{"-fno-sanitize=undefined"};
+
+    libraylib.addCSourceFile("raylib/src/rcore.c", flags);
+    libraylib.addCSourceFile("raylib/src/rshapes.c", flags);
+    libraylib.addCSourceFile("raylib/src/rtextures.c", flags);
+    libraylib.addCSourceFile("raylib/src/rtext.c", flags);
+    libraylib.addCSourceFile("raylib/src/rmodels.c", flags);
+    libraylib.addCSourceFile("raylib/src/utils.c", flags);
+    libraylib.addCSourceFile("raylib/src/raudio.c", flags);
 
     libraylib.linkLibC();
     libraylib.addIncludePath("raylib/src");
@@ -95,14 +100,17 @@ pub fn build(b: *std.Build) !void {
                 "-ogame.html",
                 "-Lzig-out/lib/",
                 "-lraylib",
-                "-sNO_FILESYSTEM=1",
-                "-sLLD_REPORT_UNDEFINED=1",
-                "-sFULL_ES3=1",
-                "-sMALLOC='emmalloc'",
-                "-sASSERTIONS=0",
+                "-DPLATFORM_WEB",
+                "--shell-file",
+                "raylib/src/minshell.html",
+                "-sASSERTIONS=1",
                 "-sUSE_GLFW=3",
-                "-sSTANDALONE_WASM",
-                "-sEXPORTED_FUNCTIONS=['_malloc','_free','_main']",
+                "-sTOTAL_MEMORY=67108864",
+                //"-sSTANDALONE_WASM",
+                "--preload-file",
+                "resources/@resources",
+                "-sEXPORTED_FUNCTIONS=['_ma_malloc_emscripten','_main','_malloc','_free','_ma_device_process_pcm_frames_playback__webaudio']",
+                //"-sEXPORTED_FUNCTIONS=['_malloc','_free','_main', '_ma_malloc_emscripten']",
             });
 
             emcc.step.dependOn(&libraylib.step);
