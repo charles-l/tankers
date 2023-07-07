@@ -11,3 +11,9 @@ pub fn main() !void {
         update();
     }
 }
+
+export var _fltused: i32 = 0x9875;
+
+export fn __chkstk() callconv(.C) void {
+    return;
+}

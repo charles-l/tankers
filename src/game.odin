@@ -37,9 +37,6 @@ EnemyEvent :: enum {
 // TODO scenarios:
 // tank vs small enemies, lead up to miniboss?
 
-@export
-_fltused: c.int = 0
-
 target_tex: rl.Texture
 impact_tex: rl.Texture
 powershield_impact: rl.Texture
@@ -455,6 +452,8 @@ tutorial_lines_5 := [?]string{
     "Alright, soldier. Your training is complete.\nPrepare for combat.",
 }
 
+fade_to_next_level := [?](proc(^State) -> bool){fade_to_black, next_level}
+
 update_tutorial :: proc(state: ^State, events: []EnemyEvent) {
     if state.tutorial_flag == 0 {
         state.enemy_pos[0] = {400, 30}
@@ -503,7 +502,7 @@ update_tutorial :: proc(state: ^State, events: []EnemyEvent) {
         if text_active(state^) {
             return
         }
-        state.event_queue = {fade_to_black, next_level}
+        state.event_queue = fade_to_next_level[:]
         state.tutorial_flag += 1
     }
 }
@@ -528,9 +527,9 @@ init_level1 :: proc(state: ^State) {
     for i in 0..<40 {
         state.enemy_health[i] = 10
         state.enemy_radius[i] = 12
-        x := rand.float32() * 40
-        y := rand.float32() * 400
-        state.enemy_pos[i] = {x - 40, y}
+        x := rl.GetRandomValue(-40, 0)
+        y := rl.GetRandomValue(0, 400)
+        state.enemy_pos[i] = {cast(f32) x, cast(f32) y}
         state.enemy_damage_mask[i] += {.Bullet}
     }
 
@@ -672,7 +671,7 @@ init :: proc "c" () {
     victory_music.looping = false
     rl.PlayMusicStream(victory_music)
 
-    renderbuf = rl.LoadRenderTexture(800, 600)
+    renderbuf = rl.LoadRenderTexture(WIDTH, HEIGHT)
 
     target_tex = rl.LoadTexture("resources/target.png")
     enemy_tex = rl.LoadTexture("resources/enemy.png")
@@ -839,12 +838,15 @@ draw_renderbuf :: proc() {
     }
 
     BeginDrawing()
+
+    r := Rectangle{0, 0, 800, -600}
     DrawTexturePro(renderbuf.texture,
-    Rectangle{0, 0, 800, -600},
+    r,
     Rectangle{0, 0, cast(f32) rl.GetScreenWidth(), cast(f32) rl.GetScreenHeight()},
     {0, 0},
     0,
     rl.WHITE)
+
     EndDrawing()
 }
 
@@ -1267,7 +1269,7 @@ update :: proc "c" () {
         case .Victory:
         draw_text_centered("Mission Success\nPress [Space] to continue", 30)
         if rl.IsKeyReleased(.SPACE) {
-            state.event_queue = {fade_to_black, next_level}
+            state.event_queue = fade_to_next_level[:]
         }
         case .Victory_Final:
         t := rl.GetTime() - victory_time
