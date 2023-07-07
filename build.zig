@@ -105,7 +105,7 @@ pub fn build(b: *std.Build) !void {
                 "raylib/src/minshell.html",
                 "-sASSERTIONS=1",
                 "-sUSE_GLFW=3",
-                "-sTOTAL_MEMORY=67108864",
+                //"-sTOTAL_MEMORY=67108864",
                 //"-sSTANDALONE_WASM",
                 "--preload-file",
                 "resources/@resources",

@@ -39,7 +39,13 @@ impact_tex: rl.Texture
 powershield_impact: rl.Texture
 tank_tex: rl.Texture
 tank_hammer_tex: rl.Texture
-sounds: map[string]rl.Sound
+sound_armor_powerup: rl.Sound
+sound_dirt_impact: rl.Sound
+sound_impact_heavy: rl.Sound
+sound_impact: rl.Sound
+sound_ratchet_1: rl.Sound
+sound_ratchet_2: rl.Sound
+sound_shot: rl.Sound
 intro: rl.Music
 songs: [3]rl.Music
 music: rl.Music
@@ -622,7 +628,7 @@ apply_bullet_damage :: proc(
             if rl.CheckCollisionCircles(enemy_pos, enemy_radius[j], bullet_pos[i], BULLET_RADIUS) {
                 dir := linalg.normalize(bullet_pos[i] - bullet_pos_old[i])
                 enemy_poss[j] -= dir * 4
-                rl.PlaySound(sounds["dirt_impact.wav"])
+                rl.PlaySound(sound_dirt_impact)
 
                 if .Bullet in enemy_damage_mask[j] {
                     enemy_health[j] -= 10
@@ -661,7 +667,10 @@ init :: proc "c" () {
     rl.InitWindow(WIDTH, HEIGHT, "TANKERS")
     rl.InitAudioDevice()
 
-    rl.SetTargetFPS(60);
+    when ODIN_ARCH != .wasm32 {
+        // only set target fps when not building for web
+        rl.SetTargetFPS(60);
+    }
     context = runtime.default_context()
     // NOTE: THIS IS NECESSARY FOR A LOT OF ODIN TYPES TO WORK
     #force_no_inline runtime._startup_runtime()
@@ -697,7 +706,7 @@ init :: proc "c" () {
 
     logo_tex = rl.LoadTexture("resources/logo.png")
 
-    sounds = make(map[string]rl.Sound)
+    //sounds = make(map[string]rl.Sound)
     impact_tex = rl.LoadTexture("resources/impact.png")
     powershield_impact = rl.LoadTexture("resources/powersheild-impact.png")
     tank_tex = rl.LoadTexture("resources/tank.png")
@@ -707,16 +716,16 @@ init :: proc "c" () {
         //sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
     //}
 
-    sounds["armor_powerup.wav"] = rl.LoadSound("resources/armor_powerup.wav")
-    sounds["dirt_impact.wav"] = rl.LoadSound("resources/dirt_impact.wav")
-    sounds["impact_heavy.wav"] = rl.LoadSound("resources/impact_heavy.wav")
-    sounds["impact.wav"] = rl.LoadSound("resources/impact.wav")
-    sounds["ratchet_1.wav"] = rl.LoadSound("resources/ratchet_1.wav")
-    sounds["ratchet_2.wav"] = rl.LoadSound("resources/ratchet_2.wav")
-    sounds["shot.wav"] = rl.LoadSound("resources/shot.wav")
+    sound_armor_powerup = rl.LoadSound("resources/armor_powerup.wav")
+    sound_dirt_impact = rl.LoadSound("resources/dirt_impact.wav")
+    sound_impact_heavy = rl.LoadSound("resources/impact_heavy.wav")
+    sound_impact = rl.LoadSound("resources/impact.wav")
+    sound_ratchet_1 = rl.LoadSound("resources/ratchet_1.wav")
+    sound_ratchet_2 = rl.LoadSound("resources/ratchet_2.wav")
+    sound_shot = rl.LoadSound("resources/shot.wav")
 
-    rl.SetSoundVolume(sounds["ratchet_1.wav"], 0.4)
-    rl.SetSoundVolume(sounds["ratchet_2.wav"], 0.4)
+    rl.SetSoundVolume(sound_ratchet_1, 0.4)
+    rl.SetSoundVolume(sound_ratchet_2, 0.4)
 
     intro = rl.LoadMusicStream("resources/tankers-intro.mp3")
     rl.PlayMusicStream(intro)
@@ -814,24 +823,23 @@ scale := 1
 
 render_bg :: proc() {
     using rl
-    rl.DrawTexturePro(bg[0],
-        rl.Rectangle{cast(f32) -rl.GetTime() * 8, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+    t := -rl.GetTime()
+    speed := []i32{8, 16, 20}
+    for i in 0..<3 {
+        x := (i32(t * cast(f64) speed[i])) % bg[0].width
+        rl.DrawTexturePro(bg[i],
         rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.Rectangle{cast(f32) x, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         {0, 0},
         0,
         WHITE)
-    rl.DrawTexturePro(bg[1],
-        rl.Rectangle{cast(f32) -rl.GetTime() * 16, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
-        rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.DrawTexturePro(bg[i],
+        rl.Rectangle{cast(f32) 0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
+        rl.Rectangle{cast(f32) (bg[0].width + x), 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         {0, 0},
         0,
         WHITE)
-    rl.DrawTexturePro(bg[2],
-        rl.Rectangle{cast(f32) -rl.GetTime() * 20, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
-        rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
-        {0, 0},
-        0,
-        WHITE)
+    }
 }
 
 draw_renderbuf :: proc() {
@@ -980,7 +988,7 @@ update :: proc "c" () {
                         // give it a force from the right
                         player.pos_old += left * 40
 
-                        rl.PlaySound(sounds["shot.wav"])
+                        rl.PlaySound(sound_shot)
 
                         if state.aim_assist && player.power_shield == 0 {
                             ideal := linalg.normalize(state.enemy_pos[0] + {0, -20} - player.pos)
@@ -1041,7 +1049,7 @@ update :: proc "c" () {
                     if linalg.vector_length(v) > 30 && player.power_shield > 0 {
                         // heavy damage
                         if trigger(&hitsfx_limiter) {
-                            rl.PlaySound(sounds["impact_heavy.wav"])
+                            rl.PlaySound(sound_impact_heavy)
                         }
                         stun(&hitstop, 0.2)
                         shake_magnitude = 4
@@ -1065,9 +1073,9 @@ update :: proc "c" () {
                     } else {
                         if linalg.vector_length(v) > 1 {
                             if trigger(&hitsfx_limiter) {
-                                rl.SetSoundVolume(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
-                                rl.SetSoundPitch(sounds["impact.wav"], 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
-                                rl.PlaySound(sounds["impact.wav"])
+                                rl.SetSoundVolume(sound_impact, 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
+                                rl.SetSoundPitch(sound_impact, 0.5 + math.clamp(1, 20, linalg.vector_length(v))/40)
+                                rl.PlaySound(sound_impact)
                             }
                         }
                         // passthrough
@@ -1138,11 +1146,11 @@ update :: proc "c" () {
 
         if diff.x > 0 && old_diff.y < 0 && diff.y > 0 { // cross into upper half
             state.ratchet = 1
-            rl.PlaySound(sounds["ratchet_1.wav"])
+            rl.PlaySound(sound_ratchet_1)
             // TODO: play sound
         } else if old_diff.y > 0 && diff.y < 0 { // cross out of upper half
             if diff.x < 0 && state.ratchet == 1 {
-                rl.PlaySound(sounds["ratchet_2.wav"])
+                rl.PlaySound(sound_ratchet_2)
                 state.rotations += 1
             }
             state.ratchet = 0
@@ -1155,7 +1163,7 @@ update :: proc "c" () {
             stun(&hitstop, 0.4)
             shake_magnitude = 4
 
-            rl.PlaySound(sounds["armor_powerup.wav"])
+            rl.PlaySound(sound_armor_powerup)
 
             small_array.push(&impacts, Impact{
                 pos = player.pos,
