@@ -97,7 +97,7 @@ pub fn build(b: *std.Build) !void {
                 "entry.c",
                 "zig-out/odinsrc.wasm.o",
                 "-g",
-                "-ogame.html",
+                "-oindex.html",
                 "-Lzig-out/lib/",
                 "-lraylib",
                 "-DPLATFORM_WEB",
