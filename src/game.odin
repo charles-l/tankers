@@ -46,6 +46,7 @@ powershield_impact: rl.Texture
 tank_tex: rl.Texture
 tank_hammer_tex: rl.Texture
 sounds: map[string]rl.Sound
+intro: rl.Music
 songs: [3]rl.Music
 music: rl.Music
 victory_music: rl.Music
@@ -61,7 +62,7 @@ flash_tex: rl.Texture
 general_tex: rl.Texture
 bg: [3]rl.Texture
 renderbuf: rl.RenderTexture2D
-font: rl.Font
+logo_tex: rl.Texture
 
 state: State
 
@@ -230,8 +231,8 @@ vclamp :: proc(v: rl.Vector2, len: f32) -> rl.Vector2 {
 draw_text_centered :: proc(text: cstring, size: i32) {
     spacing := size / 10
     s := rl.MeasureTextEx(rl.GetFontDefault(), text, cast(f32) size, cast(f32) spacing)
-    rl.DrawText(text, rl.GetScreenWidth() / 2 - cast(i32) s.x / 2, rl.GetScreenHeight() / 2 - cast(i32) s.y / 2 + 4, size, rl.BLACK)
-    rl.DrawText(text, rl.GetScreenWidth() / 2 - cast(i32) s.x / 2, rl.GetScreenHeight() / 2 - cast(i32) s.y / 2, size, rl.WHITE)
+    rl.DrawText(text, WIDTH / 2 - cast(i32) s.x / 2, HEIGHT / 2 - cast(i32) s.y / 2 + 4, size, rl.BLACK)
+    rl.DrawText(text, WIDTH / 2 - cast(i32) s.x / 2, HEIGHT / 2 - cast(i32) s.y / 2, size, rl.WHITE)
 }
 
 draw_tex :: proc(tex: rl.Texture, pos: rl.Vector2, color: rl.Color = rl.WHITE) {
@@ -655,9 +656,12 @@ text_active :: proc(state: State) -> bool {
     return state.line_i < len(state.lines)
 }
 
+WIDTH :: 800
+HEIGHT :: 600
+
 @export
 init :: proc "c" () {
-    rl.InitWindow(800, 600, "TANKERS")
+    rl.InitWindow(WIDTH, HEIGHT, "TANKERS")
     rl.InitAudioDevice()
     rl.SetTargetFPS(60);
     context = runtime.default_context()
@@ -693,6 +697,8 @@ init :: proc "c" () {
         rl.LoadTexture("resources/bg2.png"),
     }
 
+    logo_tex = rl.LoadTexture("resources/logo.png")
+
     sounds = make(map[string]rl.Sound)
     impact_tex = rl.LoadTexture("resources/impact.png")
     powershield_impact = rl.LoadTexture("resources/powersheild-impact.png")
@@ -706,13 +712,13 @@ init :: proc "c" () {
     rl.SetSoundVolume(sounds["ratchet_1.wav"], 0.4)
     rl.SetSoundVolume(sounds["ratchet_2.wav"], 0.4)
 
+    intro = rl.LoadMusicStream("resources/tankers-intro.mp3")
+    rl.PlayMusicStream(intro)
     songs[0] = rl.LoadMusicStream("resources/tankers-combat.mp3")
     songs[1] = songs[0]
     songs[2] = rl.LoadMusicStream("resources/tankers.mp3")
 
-    music = songs[0]
-
-    reset_level(&state)
+    music = intro
 }
 
 update_stunned :: proc(h: ^Stun) -> bool {
@@ -800,13 +806,8 @@ vec_ccw :: proc(v: rl.Vector2) -> rl.Vector2 {
 
 scale := 1
 
-@export
-update :: proc "c" () {
+render_bg :: proc() {
     using rl
-    context = runtime.default_context()
-    defer free_all(context.temp_allocator)
-    BeginTextureMode(renderbuf);
-    ClearBackground(GRAY);
     rl.DrawTexturePro(bg[0],
         rl.Rectangle{cast(f32) -rl.GetTime() * 8, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
         rl.Rectangle{0, 0, cast(f32) bg[0].width, cast(f32) bg[0].height},
@@ -825,7 +826,88 @@ update :: proc "c" () {
         {0, 0},
         0,
         WHITE)
+}
+
+draw_renderbuf :: proc() {
+    using rl
+    if IsKeyReleased(.ONE) {
+        scale = 1
+        SetWindowSize(cast(i32) (WIDTH*scale), cast(i32) (HEIGHT*scale))
+    } else if IsKeyReleased(.TWO) {
+        scale = 2
+        SetWindowSize(cast(i32) (WIDTH*scale), cast(i32) (HEIGHT*scale))
+    }
+
+    BeginDrawing()
+    DrawTexturePro(renderbuf.texture,
+    Rectangle{0, 0, 800, -600},
+    Rectangle{0, 0, cast(f32) rl.GetScreenWidth(), cast(f32) rl.GetScreenHeight()},
+    {0, 0},
+    0,
+    rl.WHITE)
+    EndDrawing()
+}
+
+do_intro := true
+update_intro :: proc() {
+    using rl
+    UpdateMusicStream(music)
+    BeginTextureMode(renderbuf);
+    render_bg()
+    rl.DrawTexturePro(
+        logo_tex,
+        rl.Rectangle{0, 0, cast(f32) logo_tex.width, cast(f32) logo_tex.height},
+        rl.Rectangle{
+            f32(WIDTH / 2 - logo_tex.width),
+            f32(HEIGHT / 2 - logo_tex.height),
+            f32(logo_tex.width * 2),
+            f32(logo_tex.height * 2),
+        },
+        {0, 0},
+        0,
+        rl.WHITE
+    )
+
+    {
+        {
+            text: cstring = "[Left click] to start"
+            size: i32 = 30
+            spacing := size / 10
+            s := rl.MeasureTextEx(rl.GetFontDefault(), text, cast(f32) size, cast(f32) spacing)
+            rl.DrawText(text, WIDTH / 2 - cast(i32) s.x / 2, HEIGHT / 2 - cast(i32) s.y / 2 + 140, size, rl.BLACK)
+        }
+
+        {
+            text: cstring = "Choose pixel art scale with [1] and [2]"
+            size: i32 = 20
+            spacing := size / 10
+            s := rl.MeasureTextEx(rl.GetFontDefault(), text, cast(f32) size, cast(f32) spacing)
+            rl.DrawText(text, WIDTH / 2 - cast(i32) s.x / 2, HEIGHT / 2 - cast(i32) s.y / 2 + 165, size, rl.BLACK)
+        }
+    }
+
+    EndTextureMode()
+    draw_renderbuf()
+    if IsMouseButtonReleased(.LEFT) {
+        do_intro = false
+        reset_level(&state)
+    }
+}
+
+@export
+update :: proc "c" () {
+    using rl
+    context = runtime.default_context()
+    defer free_all(context.temp_allocator)
+    if do_intro {
+        update_intro()
+        return
+    }
+
+    BeginTextureMode(renderbuf);
     rl.UpdateMusicStream(music)
+
+    render_bg()
 
     // frame vars
     jetblast := false
@@ -1144,8 +1226,8 @@ update :: proc "c" () {
             if text_active(state) {
                 // textbox
                 bg_rec := rl.Rectangle{
-                    x = cast(f32) rl.GetScreenWidth() / 2 - 200,
-                    y = cast(f32) rl.GetScreenHeight() - 48,
+                    x = cast(f32) WIDTH / 2 - 200,
+                    y = cast(f32) HEIGHT - 48,
                     width = 400,
                     height = 48,
                 }
@@ -1203,7 +1285,7 @@ update :: proc "c" () {
         }
     }
     frame_i += 1
-    rl.DrawRectangle(0, 0, rl.GetScreenWidth(), rl.GetScreenHeight(), rl.Fade(rl.BLACK, state.fade))
+    rl.DrawRectangle(0, 0, WIDTH, HEIGHT, rl.Fade(rl.BLACK, state.fade))
 
     if len(state.event_queue) > 0 {
         done := state.event_queue[0](&state)
@@ -1213,22 +1295,6 @@ update :: proc "c" () {
     }
 
     EndTextureMode();
-
-    if IsKeyReleased(.ONE) {
-        scale = 1
-        SetWindowSize(800, 600)
-    } else if IsKeyReleased(.TWO) {
-        scale = 2
-        SetWindowSize(800*2, 600*2)
-    }
-
-    BeginDrawing()
-    DrawTexturePro(renderbuf.texture,
-    Rectangle{0, 0, 800, -600},
-    Rectangle{0, 0, cast(f32) GetScreenWidth(), cast(f32) GetScreenHeight()},
-    {0, 0},
-    0,
-    rl.WHITE)
-    EndDrawing()
+    draw_renderbuf()
 }
 
