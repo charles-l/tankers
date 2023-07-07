@@ -2,7 +2,6 @@ package main
 import rl "raylib"
 import "core:c"
 import "core:fmt"
-import "core:os"
 import "core:math"
 import "core:math/linalg"
 import "core:math/rand"
@@ -12,8 +11,6 @@ import "core:slice"
 
 import "core:runtime"
 import "core:container/small_array"
-import "core:path/filepath"
-import "core:strings"
 
 GameState :: enum {
     Gameplay,
@@ -64,7 +61,7 @@ logo_tex: rl.Texture
 state: State
 
 // reset every frame
-enemy_event: [dynamic]EnemyEvent
+enemy_event: [40]EnemyEvent
 
 frame_i := 0
 
@@ -147,8 +144,8 @@ State :: struct {
 
     game_state: GameState,
 
-    bullet_pos: [dynamic]rl.Vector2,
-    bullet_pos_old: [dynamic]rl.Vector2,
+    bullet_pos: small_array.Small_Array(40, rl.Vector2),
+    bullet_pos_old: small_array.Small_Array(40, rl.Vector2),
 
     beam: rl.Vector2,
     disable_beam: bool,
@@ -266,7 +263,6 @@ reset_level :: proc(state: ^State) -> bool {
     state.lines = {""}
 
     levels[state.level].init(state)
-    resize(&enemy_event, len(state.enemy_pos))
 
     return true
 }
@@ -611,15 +607,17 @@ draw_level1 :: proc(state: State, i: int, color: rl.Color) {
 }
 
 apply_bullet_damage :: proc(
-    bullet_pos: ^[dynamic]rl.Vector2,
-    bullet_pos_old: ^[dynamic]rl.Vector2,
+    bullet_pos_arr: ^small_array.Small_Array(40, rl.Vector2),
+    bullet_pos_old_arr: ^small_array.Small_Array(40, rl.Vector2),
     enemy_poss: []rl.Vector2,
     enemy_radius: []f32,
     enemy_damage_mask: []bit_set[DamageMask],
     enemy_health: []f32,
     enemy_event: []EnemyEvent, // out
 ) {
-    for i := 0; i < len(bullet_pos); {
+    for i := 0; i < small_array.len(bullet_pos_arr^); {
+        bullet_pos := small_array.slice(bullet_pos_arr)
+        bullet_pos_old := small_array.slice(bullet_pos_old_arr)
         for enemy_pos, j in enemy_poss {
             if rl.CheckCollisionCircles(enemy_pos, enemy_radius[j], bullet_pos[i], BULLET_RADIUS) {
                 dir := linalg.normalize(bullet_pos[i] - bullet_pos_old[i])
@@ -642,8 +640,8 @@ apply_bullet_damage :: proc(
             }
         }
         if bullet_pos[i].y > 10000 {
-            ordered_remove(bullet_pos, i)
-            ordered_remove(bullet_pos_old, i)
+            small_array.unordered_remove(bullet_pos_arr, i)
+            small_array.unordered_remove(bullet_pos_old_arr, i)
             continue
         } else {
             i += 1
@@ -662,6 +660,7 @@ HEIGHT :: 600
 init :: proc "c" () {
     rl.InitWindow(WIDTH, HEIGHT, "TANKERS")
     rl.InitAudioDevice()
+
     rl.SetTargetFPS(60);
     context = runtime.default_context()
     // NOTE: THIS IS NECESSARY FOR A LOT OF ODIN TYPES TO WORK
@@ -703,10 +702,18 @@ init :: proc "c" () {
     powershield_impact = rl.LoadTexture("resources/powersheild-impact.png")
     tank_tex = rl.LoadTexture("resources/tank.png")
     tank_hammer_tex = rl.LoadTexture("resources/tank-hammer.png")
-    files, err := filepath.glob("resources/*.wav")
-    for soundpath in files {
-        sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
-    }
+    //files, err := filepath.glob("resources/*.wav")
+    //for soundpath in files {
+        //sounds[filepath.base(soundpath)] = rl.LoadSound(strings.clone_to_cstring(soundpath))
+    //}
+
+    sounds["armor_powerup.wav"] = rl.LoadSound("resources/armor_powerup.wav")
+    sounds["dirt_impact.wav"] = rl.LoadSound("resources/dirt_impact.wav")
+    sounds["impact_heavy.wav"] = rl.LoadSound("resources/impact_heavy.wav")
+    sounds["impact.wav"] = rl.LoadSound("resources/impact.wav")
+    sounds["ratchet_1.wav"] = rl.LoadSound("resources/ratchet_1.wav")
+    sounds["ratchet_2.wav"] = rl.LoadSound("resources/ratchet_2.wav")
+    sounds["shot.wav"] = rl.LoadSound("resources/shot.wav")
 
     rl.SetSoundVolume(sounds["ratchet_1.wav"], 0.4)
     rl.SetSoundVolume(sounds["ratchet_2.wav"], 0.4)
@@ -847,6 +854,9 @@ draw_renderbuf :: proc() {
     0,
     rl.WHITE)
 
+    when DEBUG {
+        rl.DrawFPS(10, 10)
+    }
     EndDrawing()
 }
 
@@ -854,6 +864,12 @@ do_intro := true
 update_intro :: proc() {
     using rl
     UpdateMusicStream(music)
+
+    if IsMouseButtonReleased(.LEFT) {
+        do_intro = false
+        reset_level(&state)
+    }
+
     BeginTextureMode(renderbuf);
     render_bg()
     rl.DrawTexturePro(
@@ -890,17 +906,19 @@ update_intro :: proc() {
 
     EndTextureMode()
     draw_renderbuf()
-    if IsMouseButtonReleased(.LEFT) {
-        do_intro = false
-        reset_level(&state)
-    }
+}
+
+to_cstring :: proc(str: string, buf: []byte) -> cstring {
+    assert(len(buf) > len(str) + 1)
+    copy(buf, str)
+    buf[len(str)] = 0
+    return cstring(rawptr(&buf[0]))
 }
 
 @export
 update :: proc "c" () {
     using rl
     context = runtime.default_context()
-    defer free_all(context.temp_allocator)
     if do_intro {
         update_intro()
         return
@@ -931,7 +949,9 @@ update :: proc "c" () {
 
     { // logic/physics
         if(!update_stunned(&hitstop)) {
-            verlet_integrate(state.bullet_pos[:], state.bullet_pos_old[:])
+            verlet_integrate(
+                small_array.slice(&state.bullet_pos),
+                small_array.slice(&state.bullet_pos_old))
             apply_bullet_damage(
                 &state.bullet_pos,
                 &state.bullet_pos_old,
@@ -983,8 +1003,8 @@ update :: proc "c" () {
                         bullet_pos_old := player.pos
                         bullet_pos := bullet_pos_old + left * 30
 
-                        append(&state.bullet_pos, bullet_pos)
-                        append(&state.bullet_pos_old, bullet_pos_old)
+                        small_array.append(&state.bullet_pos, bullet_pos)
+                        small_array.append(&state.bullet_pos_old, bullet_pos_old)
                     }
 
                     if IsMouseButtonDown(.RIGHT) {
@@ -1176,7 +1196,7 @@ update :: proc "c" () {
         }
     }
 
-    for bullet_pos in state.bullet_pos {
+    for bullet_pos in small_array.slice(&state.bullet_pos) {
         rl.DrawCircle(cast(i32)bullet_pos.x, cast(i32)bullet_pos.y, BULLET_RADIUS, BLACK)
     }
 
@@ -1247,7 +1267,13 @@ update :: proc "c" () {
                 Vector2{0, 0},
                 0,
                 WHITE)
-                rl.DrawText(strings.clone_to_cstring(state.lines[state.line_i][:state.text_i], context.temp_allocator), cast(i32) bg_rec.x + 48 + 5, cast(i32) bg_rec.y + 5, 10, rl.BLACK)
+
+                buf: [256]u8
+                rl.DrawText(to_cstring(state.lines[state.line_i][:state.text_i], buf[:]),
+                    cast(i32) bg_rec.x + 48 + 5,
+                    cast(i32) bg_rec.y + 5,
+                    10,
+                    rl.BLACK)
 
                 if state.text_i < len(state.lines[state.line_i]) {
                     if trigger(&text_limiter) {
